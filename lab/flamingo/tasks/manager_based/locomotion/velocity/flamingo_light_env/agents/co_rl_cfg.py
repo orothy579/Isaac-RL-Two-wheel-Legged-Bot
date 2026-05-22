@@ -36,7 +36,7 @@ class FlamingoPPORunnerCfg(CoRlPolicyRunnerCfg):
         entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-3,
+        learning_rate=5.0e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
@@ -52,5 +52,25 @@ class FlamingoLightFlatPPORunnerCfg_Stand_Drive(FlamingoPPORunnerCfg):
 
         self.max_iterations = 5000
         self.experiment_name = "Flamingo_Light_Flat_Stand_Drive"
+        self.policy.actor_hidden_dims = [512, 256, 128]
+        self.policy.critic_hidden_dims = [512, 256, 128]
+
+@configclass
+class FlamingoLightFlatJumpPPORunnerCfg(FlamingoPPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.max_iterations = 3000
+        self.experiment_name = "Flamingo_Light_Flat_Jump"
+        self.policy.actor_hidden_dims = [512, 256, 128]
+        self.policy.critic_hidden_dims = [512, 256, 128]
+
+
+@configclass
+class FlamingoLightRoughPPORunnerCfg_Stand_Drive(FlamingoPPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+
+        self.max_iterations = 50000
+        self.experiment_name = "Flamingo_Light_Rough_Stand_Drive"
         self.policy.actor_hidden_dims = [512, 256, 128]
         self.policy.critic_hidden_dims = [512, 256, 128]

@@ -135,10 +135,10 @@ def lift_mask_by_height_scan(
     left_lift_mask_sensor = env.scene.sensors[sensor_cfg_left.name]
     right_lift_mask_sensor = env.scene.sensors[sensor_cfg_right.name]
 
-    left_mask= left_lift_mask_sensor.data.mask 
-    right_mask = right_lift_mask_sensor.data.mask  
-    
-    lift_mask = torch.stack([left_mask, right_mask], dim=1) 
+    left_mask = left_lift_mask_sensor.data.mask.view(env.num_envs)
+    right_mask = right_lift_mask_sensor.data.mask.view(env.num_envs)
+
+    lift_mask = torch.stack([left_mask, right_mask], dim=1)
 
     command_norm = torch.norm(env.command_manager.get_command(command_name)[:, :3], dim=1)  # Shape: [num_envs]
     lift_mask *= (command_norm > 0.1).unsqueeze(-1).float()  # Apply movement condition

@@ -65,6 +65,7 @@ class MySceneCfg(InteractiveSceneCfg):
     # robots
     robot: ArticulationCfg = MISSING
     # sensors
+    # only critic Don't Include in policy network
     height_scanner = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base_link",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
@@ -73,51 +74,52 @@ class MySceneCfg(InteractiveSceneCfg):
         debug_vis=True,
         mesh_prim_paths=["/World/ground"],
     )
-    base_height_scanner = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_link",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.025, 0.025]),
-        debug_vis=True,
-        mesh_prim_paths=["/World/ground"],
-    )
-    left_wheel_height_scanner = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/left_wheel_static_link",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.025, 0.025]), # (resolution=0.05, size=[0.025, 0.025])
-        debug_vis=True,
-        mesh_prim_paths=["/World/ground"],
-    )
-    right_wheel_height_scanner = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/right_wheel_static_link",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.025, 0.025]),
-        debug_vis=True,
-        mesh_prim_paths=["/World/ground"],
-    )
-    left_mask_sensor = LiftMaskCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/left_wheel_static_link",
-        history_length=10,
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.07, size=[0.35, 0.29]),
-        debug_vis=True,
-        mesh_prim_paths=["/World/ground"],
-        gradient_threshold = 0.03,
-    )
-    right_mask_sensor = LiftMaskCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/right_wheel_static_link",
-        history_length=10,
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.07, size=[0.35, 0.29]),
-        debug_vis=True,
-        mesh_prim_paths=["/World/ground"],
-        gradient_threshold = 0.03,
-        last_zero_num = 1,
-    )
+    # Doesn't use
+    # base_height_scanner = RayCasterCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/base_link",
+    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+    #     attach_yaw_only=True,
+    #     pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.025, 0.025]),
+    #     debug_vis=True,
+    #     mesh_prim_paths=["/World/ground"],
+    # )
+    # left_wheel_height_scanner = RayCasterCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/left_wheel_static_link",
+    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+    #     attach_yaw_only=True,
+    #     pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.025, 0.025]), # (resolution=0.05, size=[0.025, 0.025])
+    #     debug_vis=True,
+    #     mesh_prim_paths=["/World/ground"],
+    # )
+    # right_wheel_height_scanner = RayCasterCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/right_wheel_static_link",
+    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+    #     attach_yaw_only=True,
+    #     pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.025, 0.025]),
+    #     debug_vis=True,
+    #     mesh_prim_paths=["/World/ground"],
+    # )
+    # left_mask_sensor = LiftMaskCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/left_wheel_static_link",
+    #     history_length=10,
+    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+    #     attach_yaw_only=True,
+    #     pattern_cfg=patterns.GridPatternCfg(resolution=0.07, size=[0.35, 0.29]),
+    #     debug_vis=True,
+    #     mesh_prim_paths=["/World/ground"],
+    #     gradient_threshold = 0.03,
+    # )
+    # right_mask_sensor = LiftMaskCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/right_wheel_static_link",
+    #     history_length=10,
+    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+    #     attach_yaw_only=True,
+    #     pattern_cfg=patterns.GridPatternCfg(resolution=0.07, size=[0.35, 0.29]),
+    #     debug_vis=True,
+    #     mesh_prim_paths=["/World/ground"],
+    #     gradient_threshold = 0.03,
+    #     last_zero_num = 1,
+    # )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
     # lights
     light = AssetBaseCfg(
@@ -285,7 +287,7 @@ class ObservationsCfg:
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_shoulder_joint", ".*_wheel_joint"])
             },
-            scale=0.15,
+            scale=0.05, # 0.05 가 더 안정적이다
         )
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel_link, noise=Unoise(n_min=-0.15, n_max=0.15), scale=0.25)  # default: -0.15
         # base_euler = ObsTerm(func=mdp.base_euler_angle_link, noise=Unoise(n_min=-0.125, n_max=0.125))  # default: -0.125
@@ -300,7 +302,7 @@ class ObservationsCfg:
     @configclass
     class NoneStackPolicyCfg(ObsGroup):
         """Observations for None-Stack policy group."""
-        velocity_commands = ObsTerm(func=mdp.generated_scaled_commands, params={"command_name": "base_velocity", "scale": (2.0, 0.0, 0.25)})
+        velocity_commands = ObsTerm(func=mdp.generated_scaled_commands, params={"command_name": "base_velocity", "scale": (2.0, 1.0, 0.25)})
         roll_pitch_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "roll_pitch"})
         event_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "yk_jump_command"})
         height_scan = ObsTerm(
@@ -526,18 +528,14 @@ class LocomotionVelocityRoughEnvCfg(ManagerBasedRLEnvCfg):
 
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
-        if self. scene.height_scanner is not None:
-            self.scene.height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.base_height_scanner is not None:
-            self.scene.base_height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.left_wheel_height_scanner is not None:
-            self.scene.left_wheel_height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.right_wheel_height_scanner is not None:    
-            self.scene.right_wheel_height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.left_mask_sensor is not None:
-            self.scene.left_mask_sensor.update_period = self.decimation * self.sim.dt
-        if self.scene.right_mask_sensor is not None:
-            self.scene.right_mask_sensor.update_period = self.decimation * self.sim.dt
+        for sensor_name in [
+            "height_scanner", "base_height_scanner",
+            "left_wheel_height_scanner", "right_wheel_height_scanner",
+            "left_mask_sensor", "right_mask_sensor",
+        ]:
+            sensor = getattr(self.scene, sensor_name, None)
+            if sensor is not None:
+                sensor.update_period = self.decimation * self.sim.dt
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
 
@@ -586,18 +584,14 @@ class LocomotionVelocityFlatEnvCfg(ManagerBasedRLEnvCfg):
 
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
-        if self. scene.height_scanner is not None:
-            self.scene.height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.base_height_scanner is not None:
-            self.scene.base_height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.left_wheel_height_scanner is not None:
-            self.scene.left_wheel_height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.right_wheel_height_scanner is not None:    
-            self.scene.right_wheel_height_scanner.update_period = self.decimation * self.sim.dt
-        if self.scene.left_mask_sensor is not None:
-            self.scene.left_mask_sensor.update_period = self.decimation * self.sim.dt
-        if self.scene.right_mask_sensor is not None:
-            self.scene.right_mask_sensor.update_period = self.decimation * self.sim.dt
+        for sensor_name in [
+            "height_scanner", "base_height_scanner",
+            "left_wheel_height_scanner", "right_wheel_height_scanner",
+            "left_mask_sensor", "right_mask_sensor",
+        ]:
+            sensor = getattr(self.scene, sensor_name, None)
+            if sensor is not None:
+                sensor.update_period = self.decimation * self.sim.dt
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
 

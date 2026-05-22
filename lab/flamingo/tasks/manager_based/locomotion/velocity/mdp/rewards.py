@@ -49,6 +49,57 @@ def track_ang_vel_z_link_exp(
     )
     return torch.exp(-ang_vel_error / std**2)
 
+def track_lin_vel_xy_exp_no_stair(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("height_scanner"),
+    height_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Velocity tracking reward that is zeroed out when stairs are detected.
+
+    Uses the same height_var > height_threshold logic as feet_air_time_height_scan.
+    On flat terrain the reward behaves identically to track_lin_vel_xy_link_exp.
+    """
+    height_scanner: RayCaster = env.scene.sensors[sensor_cfg.name]
+    heights = height_scanner.data.ray_hits_w[..., 2]
+    height_var = heights.max(dim=1).values - heights.min(dim=1).values
+    no_stair = (height_var <= height_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    lin_vel_error = torch.sum(
+        torch.square(env.command_manager.get_command(command_name)[:, :2] - asset.data.root_link_lin_vel_b[:, :2]),
+        dim=1,
+    )
+    return torch.exp(-lin_vel_error / std**2) * no_stair
+
+
+def track_base_height_exp_on_stair(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names="base_link"),
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("height_scanner"),
+    height_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Positive height-tracking reward that activates only when stairs are detected.
+
+    Returns exp(-height_error / std^2) * stair_detected, where the target height
+    is adjusted relative to the mean terrain height (same approach as base_height_adaptive_l2).
+    Encourages the robot to maintain body height while climbing stairs.
+    """
+    height_scanner: RayCaster = env.scene.sensors[sensor_cfg.name]
+    heights = height_scanner.data.ray_hits_w[..., 2]
+    height_var = heights.max(dim=1).values - heights.min(dim=1).values
+    stair_detected = (height_var > height_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    adjusted_target = target_height + torch.mean(heights, dim=1)
+    height_error = torch.square(asset.data.root_link_pos_w[:, 2] - adjusted_target)
+    return torch.exp(-height_error / std**2) * stair_detected
+
+
 def track_lin_vel_xy_yaw_frame_exp(
     env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -254,6 +305,80 @@ def feet_air_time(
     # no reward for zero command
     reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
     return reward
+
+
+def feet_air_time_z_cmd(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.1,
+    z_cmd_threshold: float = 0.33,
+) -> torch.Tensor:
+    """Reward wheel air time gated on the pos_z command (index 3).
+
+    Unlike feet_air_time which gates on xy velocity norm, this variant
+    activates only when the height command exceeds z_cmd_threshold.
+    Designed for in-place jump training where lin_vel_x/y and ang_vel_z
+    are always zero.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
+    z_cmd = env.command_manager.get_command(command_name)[:, 3]
+    return reward * (z_cmd > z_cmd_threshold).float()
+
+
+def feet_air_time_height_scan(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    height_scan_cfg: SceneEntityCfg,
+    height_threshold: float = 0.05,
+    air_time_threshold: float = 0.25,
+) -> torch.Tensor:
+    """Reward wheel air time only when stairs are detected by height scanner.
+
+    Conditions the air-time reward on terrain height variation measured by the
+    height_scanner sensor. When max-min height exceeds `height_threshold` (e.g.
+    5 cm), stairs are assumed present and the reward activates.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+
+    height_scanner: RayCaster = env.scene.sensors[height_scan_cfg.name]
+    heights = height_scanner.data.ray_hits_w[..., 2]  # (N, num_rays)
+    height_var = heights.max(dim=1).values - heights.min(dim=1).values  # (N,)
+    stair_detected = (height_var > height_threshold).float()
+
+    base_reward = torch.sum((last_air_time - air_time_threshold) * first_contact, dim=1)
+    command_norm = torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1)
+    return base_reward * (command_norm > 0.1) * stair_detected
+
+
+def shoulder_motion_no_stair(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    height_scan_cfg: SceneEntityCfg,
+    height_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Penalize shoulder joint motion only when no stairs are detected under the robot.
+
+    Uses the height_scanner ray hits to estimate terrain variation. When the
+    height variation (max - min over rays) is below ``height_threshold``, the
+    terrain is assumed flat and the squared shoulder joint velocity is summed
+    as a penalty. On stair-like terrain the reward returns zero so jump motions
+    triggered by the policy are not discouraged.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    height_scanner: RayCaster = env.scene.sensors[height_scan_cfg.name]
+    heights = height_scanner.data.ray_hits_w[..., 2]  # (N, num_rays)
+    height_var = heights.max(dim=1).values - heights.min(dim=1).values  # (N,)
+    flat = (height_var <= height_threshold).float()
+    joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    return torch.sum(joint_vel.pow(2), dim=1) * flat
+
 
 def safe_landing_motion(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """

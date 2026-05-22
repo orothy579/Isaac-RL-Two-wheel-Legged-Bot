@@ -1,0 +1,4 @@
+python scripts/co_rl/train.py \
+  --task Isaac-Velocity-Rough-Flamingo-Light-v1-ppo \
+  --algo ppo --num_envs 4096 --headless \
+  --num_policy_stacks 2 --num_critic_stacks 2
