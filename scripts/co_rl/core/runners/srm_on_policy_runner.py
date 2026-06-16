@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import statistics
 import time
@@ -187,6 +188,8 @@ class SRMOnPolicyRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
+                if self.log_dir is not None:
+                    self._save_params(self.log_dir)
 
         self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
@@ -281,15 +284,35 @@ class SRMOnPolicyRunner:
         )
         print(log_string)
 
+    def _get_reward_weights(self) -> dict:
+        try:
+            rm = self.env.unwrapped.reward_manager
+            return {name: float(cfg.weight) for name, cfg in zip(rm._term_names, rm._term_cfgs)}
+        except AttributeError:
+            return {}
+
+    def _save_params(self, log_dir: str):
+        """Write params.json once at training start — reward weights + PPO hyperparams."""
+        params = {
+            "reward_weights": self._get_reward_weights(),
+            "algorithm": {k: v for k, v in self.cfg.get("algorithm", {}).items() if not callable(v)},
+            "num_steps_per_env": self.cfg.get("num_steps_per_env"),
+            "experiment_name": self.cfg.get("experiment_name"),
+        }
+        with open(os.path.join(log_dir, "params.json"), "w") as f:
+            json.dump(params, f, indent=2)
+
     def save(self, path, infos=None):
+        reward_weights = self._get_reward_weights()
         saved_dict = {
             "model_state_dict": self.alg.actor_critic.state_dict(),
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
             "infos": infos,
-            "srm_state_dict": self.alg.srm.state_dict(),  # Save SRM state
-            "srm_fc_state_dict": self.alg.srm_fc.state_dict(),  # Save fully connected state
-            "srm_optimizer_state_dict": self.alg.srm_optimizer.state_dict(),  # Save optimizer
+            "reward_weights": reward_weights,
+            "srm_state_dict": self.alg.srm.state_dict(),
+            "srm_fc_state_dict": self.alg.srm_fc.state_dict(),
+            "srm_optimizer_state_dict": self.alg.srm_optimizer.state_dict(),
         }
 
         if self.empirical_normalization:

@@ -63,3 +63,18 @@ def time_illegal_contact(
     contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
 
     return torch.any(contact_time >= time_threshold, dim=1)
+
+
+def base_height_too_low(
+    env: ManagerBasedRLEnv,
+    minimum_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terminate if the robot base height drops below minimum_height.
+
+    Detects crawling and fallen states regardless of contact force magnitude.
+    Use minimum_height well below standing height (0.31m) but above ground (0.0m),
+    e.g. 0.15m, so normal jumps are unaffected.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return asset.data.root_link_pos_w[:, 2] < minimum_height

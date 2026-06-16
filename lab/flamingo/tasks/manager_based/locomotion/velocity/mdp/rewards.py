@@ -135,6 +135,18 @@ def ang_vel_xy_link_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scene
     asset: RigidObject = env.scene[asset_cfg.name]
     return torch.sum(torch.square(asset.data.root_link_ang_vel_b[:, :2]), dim=1)
 
+
+def ang_vel_z_link_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize z-axis base angular velocity (yaw) using L2 squared kernel.
+
+    Unlike the exponential tracking reward which vanishes at high spin rates,
+    this L2 penalty provides a consistent gradient regardless of yaw speed,
+    making it effective at suppressing spinning-in-place behaviour.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return torch.square(asset.data.root_link_ang_vel_b[:, 2])
+
+
 def track_pos_z_exp(
     env: ManagerBasedRLEnv,
     temperature: float,
@@ -305,6 +317,139 @@ def feet_air_time(
     # no reward for zero command
     reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
     return reward
+
+
+def base_height_bonus_on_z_cmd(
+    env: ManagerBasedRLEnv,
+    standing_height: float,
+    command_name: str,
+    z_cmd_threshold: float = 0.38,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names="base_link"),
+) -> torch.Tensor:
+    """Dense reward for body height above standing when jump is commanded.
+
+    Returns (current_z - standing_height) clamped to [0, inf) multiplied by a
+    binary gate that activates only when pos_z command exceeds z_cmd_threshold.
+    This provides an immediate, continuous reward signal throughout the jump
+    trajectory, making it much easier for the policy to discover jumping.
+    """
+    z_cmd = env.command_manager.get_command(command_name)[:, 3]
+    jump_commanded = (z_cmd > z_cmd_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    height = asset.data.root_link_pos_w[:, 2]
+    height_above_standing = torch.clamp(height - standing_height, min=0.0)
+    return height_above_standing * jump_commanded
+
+
+def base_height_bonus_airborne(
+    env: ManagerBasedRLEnv,
+    standing_height: float,
+    command_name: str,
+    z_cmd_threshold: float = 0.38,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names="base_link"),
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=[".*_wheel_link"]),
+) -> torch.Tensor:
+    """Dense height bonus gated on jump command AND actual wheel airborne state.
+
+    Unlike base_height_bonus_on_z_cmd which fires whenever jump is commanded,
+    this variant additionally requires that the wheels are off the ground.
+    Prevents the policy from learning to simply extend legs and hold height
+    statically — the robot must actually become airborne to earn the bonus.
+    """
+    z_cmd = env.command_manager.get_command(command_name)[:, 3]
+    jump_commanded = (z_cmd > z_cmd_threshold).float()
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # Most recent contact forces: (N, n_wheels, 3)
+    net_forces = contact_sensor.data.net_forces_w_history[:, 0, sensor_cfg.body_ids, :]
+    max_wheel_force = torch.norm(net_forces, dim=-1).max(dim=1).values  # (N,)
+    is_airborne = (max_wheel_force < 1.0).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    height = asset.data.root_link_pos_w[:, 2]
+    height_above_standing = torch.clamp(height - standing_height, min=0.0)
+    return height_above_standing * jump_commanded * is_airborne
+
+
+def base_height_threshold_bonus(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    command_name: str,
+    z_cmd_threshold: float = 0.38,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names="base_link"),
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=[".*_wheel_link"]),
+) -> torch.Tensor:
+    """Fixed bonus of 1.0 per step when base height exceeds target_height while airborne.
+
+    Complements the proportional base_height_bonus_airborne with a hard threshold:
+    creates a step-change in reward to overcome the robot's preference for safe
+    low jumps, incentivising it to exceed a specific height goal.
+    """
+    z_cmd = env.command_manager.get_command(command_name)[:, 3]
+    jump_commanded = (z_cmd > z_cmd_threshold).float()
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    net_forces = contact_sensor.data.net_forces_w_history[:, 0, sensor_cfg.body_ids, :]
+    max_wheel_force = torch.norm(net_forces, dim=-1).max(dim=1).values
+    is_airborne = (max_wheel_force < 1.0).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    height = asset.data.root_link_pos_w[:, 2]
+    above_target = (height > target_height).float()
+
+    return above_target * jump_commanded * is_airborne
+
+
+def wheel_height_bonus(
+    env: ManagerBasedRLEnv,
+    standing_wheel_height: float,
+    command_name: str,
+    z_cmd_threshold: float = 0.38,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=[".*_wheel_link"]),
+) -> torch.Tensor:
+    """Proportional bonus for wheel height above standing position, gated on jump command.
+
+    More physically meaningful than base_height_bonus_airborne for stair clearance:
+    wheel_z directly determines whether the robot can clear a step edge.
+    No contact-force gate needed — if min(wheel_z) > standing_wheel_height,
+    at least one wheel is physically off the ground.
+
+    Use min() of both wheels so the robot must lift BOTH wheels, not just one.
+    """
+    z_cmd = env.command_manager.get_command(command_name)[:, 3]
+    jump_commanded = (z_cmd > z_cmd_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    wheel_heights = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # (N, 2)
+    min_wheel_height = wheel_heights.min(dim=1).values  # conservative: both wheels must clear
+
+    height_above_standing = torch.clamp(min_wheel_height - standing_wheel_height, min=0.0)
+    return height_above_standing * jump_commanded
+
+
+def wheel_height_threshold_bonus(
+    env: ManagerBasedRLEnv,
+    target_wheel_height: float,
+    command_name: str,
+    z_cmd_threshold: float = 0.38,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=[".*_wheel_link"]),
+) -> torch.Tensor:
+    """Fixed bonus when BOTH wheels exceed target_wheel_height, gated on jump command.
+
+    Directly encodes stair clearance: target_wheel_height should match the stair
+    riser (e.g. 0.15m for a 15cm step). No separate airborne gate — if min(wheel_z)
+    exceeds standing_wheel_height, the robot is physically airborne.
+    """
+    z_cmd = env.command_manager.get_command(command_name)[:, 3]
+    jump_commanded = (z_cmd > z_cmd_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    wheel_heights = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # (N, 2)
+    min_wheel_height = wheel_heights.min(dim=1).values
+
+    above_target = (min_wheel_height > target_wheel_height).float()
+    return above_target * jump_commanded
 
 
 def feet_air_time_z_cmd(

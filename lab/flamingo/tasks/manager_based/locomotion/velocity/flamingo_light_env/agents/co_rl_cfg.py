@@ -63,6 +63,66 @@ class FlamingoLightFlatJumpPPORunnerCfg(FlamingoPPORunnerCfg):
         self.experiment_name = "Flamingo_Light_Flat_Jump"
         self.policy.actor_hidden_dims = [512, 256, 128]
         self.policy.critic_hidden_dims = [512, 256, 128]
+        self.algorithm.learning_rate = 1e-4
+
+        # ── MOO: Lagrangian Reward Autotuning ────────────────────────────────
+        # Ref: JJUNE0 et al., "isaaclab_add_reward_autotuning" (POSTECH, 2024)
+        #      https://github.com/JJUNE0/isaaclab_add_reward_autotuning
+        # Ref: Tessler et al., "Reward Constrained Policy Optimization" ICLR 2019
+        #
+        # Each term's λ adjusts automatically so that the mean per-step
+        # contribution converges to "target".  Terms NOT listed here keep
+        # their fixed weights unchanged (termination_penalty, is_alive, etc.).
+        #
+        # Targets are in the same units as Episode_Reward/<term> in tensorboard
+        # (mean per-step contribution, already scaled by weight × step_dt=0.02s).
+        # Tune them by observing the tensorboard values after a few hundred iters.
+        #
+        # Update rule:  log λ ← log λ + lr · sign(init_weight) · (target − actual)
+        self.moo = {
+            # ── Jump objective ──────────────────────────────────────────────
+            # Want wheels to be meaningfully airborne each episode.
+            # Target ≈ 0.002 means avg ~0.1 m above standing over 10s episode.
+            # (wheel_height_bonus weight×dt = 10×0.02 = 0.2; 0.002/0.2 = 0.01 m lift)
+            "wheel_height_bonus": {
+                "init_weight": 10.0,
+                "target": 0.002,
+                "lr": 5e-3,
+                "min_abs_weight": 1.0,
+                "max_abs_weight": 50.0,
+            },
+            # ── Stability objectives ────────────────────────────────────────
+            # Upright posture: allow small tilt (euler angle ~0.1 rad)
+            # flat_orientation returns euler² ≥ 0; weight=-1.0, step_dt=0.02
+            # target=-0.002 ≈ euler²<0.1 mean
+            "flat_orientation": {
+                "init_weight": -1.0,
+                "target": -0.002,
+                "lr": 2e-3,
+                "min_abs_weight": 0.1,
+                "max_abs_weight": 5.0,
+            },
+            # Height regulation: allow deviation during jump but pull back on land
+            # base_height returns (z-0.31)²; weight=-15.0, step_dt=0.02
+            # target=-0.06 ≈ mean deviation ~0.14 m (reasonable during jumps)
+            "base_height": {
+                "init_weight": -15.0,
+                "target": -0.06,
+                "lr": 2e-3,
+                "min_abs_weight": 2.0,
+                "max_abs_weight": 50.0,
+            },
+            # ── Spin suppression ────────────────────────────────────────────
+            # ang_vel_z_l2 returns ω²; weight=-0.05, step_dt=0.02
+            # target=-0.001 ≈ ω_z < 0.3 rad/s mean
+            "ang_vel_z_l2": {
+                "init_weight": -0.05,
+                "target": -0.001,
+                "lr": 2e-3,
+                "min_abs_weight": 0.005,
+                "max_abs_weight": 1.0,
+            },
+        }
 
 
 @configclass

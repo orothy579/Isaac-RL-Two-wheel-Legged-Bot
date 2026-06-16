@@ -5,7 +5,8 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_recurrent import ActorCriticRecurrent
+from .lagrangian_tuner import LagrangianTuner
 from .normalizer import EmpiricalNormalization
 from .replay_memory import ReplayMemory, TACOReplayMemory
 
-__all__ = ["ActorCritic", "ActorCriticRecurrent"]
+__all__ = ["ActorCritic", "ActorCriticRecurrent", "LagrangianTuner"]

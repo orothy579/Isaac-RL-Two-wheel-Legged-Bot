@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import statistics
 import time
@@ -13,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 from scripts import co_rl
 from scripts.co_rl.core.algorithms import PPO
 from scripts.co_rl.core.env import VecEnv
-from scripts.co_rl.core.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization
+from scripts.co_rl.core.modules import ActorCritic, ActorCriticRecurrent, EmpiricalNormalization, LagrangianTuner
 from scripts.co_rl.core.utils import store_code_state
 
 
@@ -67,6 +68,12 @@ class OnPolicyRunner:
         self.tot_time = 0
         self.current_learning_iteration = 0
         self.git_status_repos = [co_rl.__file__]
+
+        # MOO: Lagrangian autotuner (optional)
+        moo_cfg = self.cfg.get("moo", None)
+        self.lagrangian_tuner: LagrangianTuner | None = (
+            LagrangianTuner(moo_cfg) if moo_cfg else None
+        )
 
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
@@ -163,6 +170,9 @@ class OnPolicyRunner:
             self.current_learning_iteration = it
             if self.log_dir is not None:
                 self.log(locals())
+            # MOO: update Lagrangian multipliers and apply to reward manager
+            if self.lagrangian_tuner is not None and ep_infos:
+                self._update_lagrangian(ep_infos)
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
             ep_infos.clear()
@@ -173,6 +183,9 @@ class OnPolicyRunner:
                 if self.logger_type in ["wandb", "neptune"] and git_file_paths:
                     for path in git_file_paths:
                         self.writer.save_file(path)
+                # write params.json once at the start of training
+                if self.log_dir is not None:
+                    self._save_params(self.log_dir)
 
         self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
 
@@ -261,16 +274,75 @@ class OnPolicyRunner:
         )
         print(log_string)
 
+    def _get_reward_weights(self) -> dict:
+        try:
+            rm = self.env.unwrapped.reward_manager
+            return {name: float(cfg.weight) for name, cfg in zip(rm._term_names, rm._term_cfgs)}
+        except AttributeError:
+            return {}
+
+    def _save_params(self, log_dir: str):
+        """Write params.json once at training start — reward weights + PPO hyperparams."""
+        params = {
+            "reward_weights": self._get_reward_weights(),
+            "moo": self.cfg.get("moo") or {},
+            "algorithm": {k: v for k, v in self.cfg.get("algorithm", {}).items() if not callable(v)},
+            "num_steps_per_env": self.cfg.get("num_steps_per_env"),
+            "experiment_name": self.cfg.get("experiment_name"),
+        }
+        with open(os.path.join(log_dir, "params.json"), "w") as f:
+            json.dump(params, f, indent=2)
+
+    def _update_lagrangian(self, ep_infos: list) -> None:
+        """Compute per-term episode reward means, update λ, apply to reward manager."""
+        # Aggregate per-term means across all episodes in this iteration
+        ep_stats: dict[str, float] = {}
+        if ep_infos:
+            all_keys = set().union(*(e.keys() for e in ep_infos))
+            for key in all_keys:
+                vals = []
+                for ep_info in ep_infos:
+                    if key not in ep_info:
+                        continue
+                    v = ep_info[key]
+                    if isinstance(v, torch.Tensor):
+                        vals.extend(v.cpu().flatten().tolist())
+                    else:
+                        vals.append(float(v))
+                if vals:
+                    ep_stats[key] = sum(vals) / len(vals)
+
+        updated = self.lagrangian_tuner.update_from_ep_stats(ep_stats)
+
+        # Apply updated weights to the reward manager
+        try:
+            rm = self.env.unwrapped.reward_manager
+            for term_name, new_weight in updated.items():
+                rm.get_term_cfg(term_name).weight = new_weight
+        except AttributeError:
+            pass
+
+        # Log each multiplier to tensorboard
+        if self.writer is not None:
+            for term_name, new_weight in updated.items():
+                self.writer.add_scalar(
+                    f"MOO/weight/{term_name}", new_weight, self.current_learning_iteration
+                )
+
     def save(self, path, infos=None):
+        reward_weights = self._get_reward_weights()
         saved_dict = {
             "model_state_dict": self.alg.actor_critic.state_dict(),
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
             "infos": infos,
+            "reward_weights": reward_weights,
         }
         if self.empirical_normalization:
             saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
             saved_dict["critic_obs_norm_state_dict"] = self.critic_obs_normalizer.state_dict()
+        if self.lagrangian_tuner is not None:
+            saved_dict["lagrangian_state"] = self.lagrangian_tuner.state_dict()
         torch.save(saved_dict, path)
 
         # Upload model to external logging service
@@ -285,6 +357,8 @@ class OnPolicyRunner:
             self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_norm_state_dict"])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+        if self.lagrangian_tuner is not None and "lagrangian_state" in loaded_dict:
+            self.lagrangian_tuner.load_state_dict(loaded_dict["lagrangian_state"])
         self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 

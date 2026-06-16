@@ -6,14 +6,24 @@
 import math
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
 import lab.flamingo.tasks.manager_based.locomotion.velocity.mdp as mdp
 from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.velocity_env_cfg import (
     LocomotionVelocityFlatEnvCfg,
+    TerminationsCfg,
 )
 
 from lab.flamingo.assets.flamingo.flamingo_light_v1 import FLAMINGO_LIGHT_CFG  # isort: skip
+
+
+@configclass
+class FlamingoJumpTerminationsCfg(TerminationsCfg):
+    base_too_low = DoneTerm(
+        func=mdp.base_height_too_low,
+        params={"minimum_height": 0.13, "asset_cfg": SceneEntityCfg("robot")},
+    )
 
 
 @configclass
@@ -29,21 +39,56 @@ class FlamingoJumpRewardsCfg:
             "z_cmd_threshold": 0.38,
         },
     )
+    # Proportional bonus for wheel height above standing position.
+    # standing_wheel_height=0.035 is the wheel radius (center height when touching flat ground).
+    # Rewards ACTUAL wheel clearance, not base height — more meaningful for stair climbing.
+    # No contact-force gate needed: wheel_z > 0.035 already implies airborne.
+    wheel_height_bonus = RewTerm(
+        func=mdp.wheel_height_bonus,
+        weight=10.0,
+        params={
+            "standing_wheel_height": 0.035,
+            "command_name": "base_velocity",
+            "z_cmd_threshold": 0.38,
+            "asset_cfg": SceneEntityCfg("robot", body_names=[".*_wheel_link"]),
+        },
+    )
+    # Step-change bonus when BOTH wheels clear 0.15m (15cm stair target).
+    # wheel center > 0.15m → wheel bottom > 0.115m → clears a ~11cm step edge.
+    wheel_height_target_bonus = RewTerm(
+        func=mdp.wheel_height_threshold_bonus,
+        weight=15.0,
+        params={
+            "target_wheel_height": 0.15,
+            "command_name": "base_velocity",
+            "z_cmd_threshold": 0.38,
+            "asset_cfg": SceneEntityCfg("robot", body_names=[".*_wheel_link"]),
+        },
+    )
+
     # -- Stability: reward staying still (lin_vel commands are 0,0)
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_link_exp,
         weight=1.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
+    # Reward zero yaw velocity — gradient vanishes at high spin, so pair with L2 below
+    track_ang_vel_z = RewTerm(
+        func=mdp.track_ang_vel_z_link_exp,
+        weight=0.5,
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+    # L2 yaw penalty: provides consistent gradient at any spin rate (exp alone vanishes)
+    ang_vel_z_l2 = RewTerm(func=mdp.ang_vel_z_link_l2, weight=-0.05)
 
     # -- Stability penalties
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_link_l2, weight=-0.005)
     flat_orientation = RewTerm(func=mdp.flat_euler_angle_l2, weight=-1.0)
 
-    # Strong pull back to 0.31m after landing — counters shoulder extension on ground
+    # Pull to 0.31m. During airborne, base_height_bonus (+10.0 × delta) overrides this.
     base_height = RewTerm(
         func=mdp.base_height_adaptive_l2,
-        weight=-20.0,
+        weight=-15.0,
         params={
             "target_height": 0.31,
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
@@ -53,14 +98,14 @@ class FlamingoJumpRewardsCfg:
     # -- Joint constraints
     dof_pos_limits_shoulder = RewTerm(
         func=mdp.joint_pos_limits,
-        weight=-0.5,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*_shoulder_joint")},
     )
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-0.5,
+        weight=-2.0,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_shoulder_link", ".*_leg_link"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_caster_link", ".*_shoulder_link", ".*_leg_link", "base_link"]),
             "threshold": 1.0,
         },
     )
@@ -70,8 +115,8 @@ class FlamingoJumpRewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=".*_shoulder_joint")},
     )
 
-    # -- Smoothness (stricter than flat drive to prevent explosive actions)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
+    # -- Smoothness
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.001)
     dof_torques_joints_l2 = RewTerm(
         func=mdp.joint_torques_l2,
         weight=-2.0e-5,
@@ -94,10 +139,10 @@ class FlamingoJumpRewardsCfg:
     )
 
     # -- Episode management
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-20.0)
     time_conditioned_penalty = RewTerm(
         func=mdp.is_terminated_term,
-        weight=-1000.0,
+        weight=-100.0,
         params={"term_keys": "time_illegal_contact"},
     )
     is_alive = RewTerm(mdp.is_alive, weight=0.1)
@@ -107,6 +152,7 @@ class FlamingoJumpRewardsCfg:
 class FlamingoFlatJumpEnvCfg(LocomotionVelocityFlatEnvCfg):
 
     rewards: FlamingoJumpRewardsCfg = FlamingoJumpRewardsCfg()
+    terminations: FlamingoJumpTerminationsCfg = FlamingoJumpTerminationsCfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -177,13 +223,14 @@ class FlamingoFlatJumpEnvCfg(LocomotionVelocityFlatEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
-        self.commands.base_velocity.ranges.pos_z = (0.35, 0.55)
+        self.commands.base_velocity.ranges.pos_z = (0.42, 0.58)
 
         # ── Terminations ─────────────────────────────────────────────────────
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
             "base_link",
-            "left_leg_link",
-            "right_leg_link",
+            "FL_caster_link", "FR_caster_link", "RL_caster_link", "RR_caster_link",
+            ".*_shoulder_link",
+            ".*_leg_link",
         ]
 
 
@@ -218,6 +265,8 @@ class FlamingoFlatJumpEnvCfg_PLAY(FlamingoFlatJumpEnvCfg):
         }
 
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            "left_leg_link",
-            "right_leg_link",
+            "base_link",
+            "FL_caster_link", "FR_caster_link", "RL_caster_link", "RR_caster_link",
+            ".*_shoulder_link",
+            ".*_leg_link",
         ]
