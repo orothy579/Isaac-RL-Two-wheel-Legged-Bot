@@ -170,6 +170,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg | Man
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+    elif args_cli.warmstart_ckpt:
+        # transfer-load from a (possibly cross-task) checkpoint, then train fresh
+        print(f"[INFO]: Warm-starting (transfer) from: {args_cli.warmstart_ckpt}")
+        runner.load_transfer(args_cli.warmstart_ckpt)
 
     # set seed of the environment
     env.seed(agent_cfg.seed)

@@ -29,6 +29,14 @@ def add_co_rl_args(parser: argparse.ArgumentParser):
     arg_group.add_argument("--resume", type=bool, default=None, help="Whether to resume from a checkpoint.")
     arg_group.add_argument("--load_run", type=str, default=None, help="Name of the run folder to resume from.")
     arg_group.add_argument("--checkpoint", type=str, default=None, help="Checkpoint file to resume from.")
+    arg_group.add_argument(
+        "--warmstart_ckpt",
+        type=str,
+        default=None,
+        help="Absolute path to a checkpoint to warm-start (transfer-load) from: copies shape-compatible "
+        "weights and matching obs normalizer, then trains fresh. Use for cross-task transfer where obs "
+        "dims differ (e.g. flat-drive -> rough). Ignored when --resume is set.",
+    )
     # -- logger arguments
     arg_group.add_argument(
         "--logger", type=str, default=None, choices={"wandb", "tensorboard", "neptune"}, help="Logger module to use."

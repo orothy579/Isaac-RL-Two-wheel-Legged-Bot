@@ -281,14 +281,53 @@ class OnPolicyRunner:
         except AttributeError:
             return {}
 
+    def _get_terrain_params(self) -> dict:
+        """Extract terrain configuration from the env config, if present."""
+        try:
+            terrain_cfg = self.env.unwrapped.cfg.scene.terrain
+        except AttributeError:
+            return {}
+
+        result: dict = {
+            "terrain_type": getattr(terrain_cfg, "terrain_type", None),
+            "max_init_terrain_level": getattr(terrain_cfg, "max_init_terrain_level", None),
+        }
+
+        tg = getattr(terrain_cfg, "terrain_generator", None)
+        if tg is None:
+            return result  # flat / plane terrain — nothing more to record
+
+        result["terrain_generator"] = {
+            "num_rows": getattr(tg, "num_rows", None),
+            "num_cols": getattr(tg, "num_cols", None),
+            "curriculum": getattr(tg, "curriculum", None),
+            "difficulty_range": list(getattr(tg, "difficulty_range", [])),
+            "size": list(getattr(tg, "size", [])),
+            "border_width": getattr(tg, "border_width", None),
+        }
+
+        sub = getattr(tg, "sub_terrains", {})
+        if sub:
+            sub_out = {}
+            for name, scfg in sub.items():
+                sub_out[name] = {
+                    k: (list(v) if hasattr(v, "__iter__") and not isinstance(v, str) else v)
+                    for k, v in vars(scfg).items()
+                    if not k.startswith("_") and not callable(v)
+                }
+            result["terrain_generator"]["sub_terrains"] = sub_out
+
+        return result
+
     def _save_params(self, log_dir: str):
-        """Write params.json once at training start — reward weights + PPO hyperparams."""
+        """Write params.json once at training start — reward weights, PPO hyperparams, terrain."""
         params = {
             "reward_weights": self._get_reward_weights(),
             "moo": self.cfg.get("moo") or {},
             "algorithm": {k: v for k, v in self.cfg.get("algorithm", {}).items() if not callable(v)},
             "num_steps_per_env": self.cfg.get("num_steps_per_env"),
             "experiment_name": self.cfg.get("experiment_name"),
+            "terrain": self._get_terrain_params(),
         }
         with open(os.path.join(log_dir, "params.json"), "w") as f:
             json.dump(params, f, indent=2)
@@ -361,6 +400,63 @@ class OnPolicyRunner:
             self.lagrangian_tuner.load_state_dict(loaded_dict["lagrangian_state"])
         self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
+
+    def load_transfer(self, path, load_optimizer=False):
+        """Warm-start (transfer) load that tolerates obs-dim differences.
+
+        Unlike :meth:`load` (strict), this copies only the tensors whose name AND
+        shape match the current model — e.g. the full actor and every
+        shape-compatible critic layer — and re-initializes the rest (such as the
+        critic input layer when the critic obs dim changed). Each observation
+        normalizer is loaded only if its shape matches; the optimizer and the
+        learning-iteration counter are reset so training starts fresh on the new
+        task. Use this for cross-task transfer (e.g. flat-drive -> rough) where
+        the policy matches but the critic obs space differs.
+        """
+        loaded_dict = torch.load(path, map_location=self.device)
+        ckpt_model = loaded_dict["model_state_dict"]
+        model_sd = self.alg.actor_critic.state_dict()
+
+        matched, skipped = [], []
+        for k, v in ckpt_model.items():
+            # Do not transfer the action-noise std: keep the fresh init_noise_std
+            # so the warm-started policy explores the new task instead of inheriting
+            # the source model's converged (near-zero) exploration.
+            if k == "std":
+                skipped.append(k)
+                continue
+            if k in model_sd and model_sd[k].shape == v.shape:
+                model_sd[k] = v
+                matched.append(k)
+            else:
+                skipped.append(k)
+        self.alg.actor_critic.load_state_dict(model_sd)
+
+        # Load each obs normalizer only when its shape matches (policy normally
+        # matches; critic is skipped when the critic obs dim differs).
+        if self.empirical_normalization:
+            for normalizer, key in (
+                (self.obs_normalizer, "obs_norm_state_dict"),
+                (self.critic_obs_normalizer, "critic_obs_norm_state_dict"),
+            ):
+                sd = loaded_dict.get(key)
+                if sd is None:
+                    continue
+                try:
+                    normalizer.load_state_dict(sd)
+                    matched.append(key)
+                except RuntimeError:
+                    skipped.append(key)
+
+        if load_optimizer:
+            try:
+                self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            except (ValueError, RuntimeError):
+                print("[WARM-START] optimizer state incompatible; using a fresh optimizer.")
+
+        print(f"[WARM-START] transferred {len(matched)} tensors from: {path}")
+        print(f"[WARM-START] re-initialized (name/shape mismatch): {skipped}")
+        return loaded_dict.get("infos")
 
     def get_inference_policy(self, device=None):
         self.eval_mode()  # switch to evaluation mode (dropout for example)
