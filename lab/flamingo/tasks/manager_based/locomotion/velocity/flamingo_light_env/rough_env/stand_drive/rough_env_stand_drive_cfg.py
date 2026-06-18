@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 import math
-import isaaclab.terrains as terrain_gen
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -75,7 +74,7 @@ class FlamingoRewardsCfg():
     )
     shoulder_motion_no_stair = RewTerm(
         func=mdp.shoulder_motion_no_stair,
-        weight=0.0,  # GAP task: disabled — it penalized the shoulder crouch needed to jump
+        weight=-0.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_shoulder_joint"),
             "height_scan_cfg": SceneEntityCfg("height_scanner"),
@@ -118,17 +117,13 @@ class FlamingoRewardsCfg():
 
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.001)
 
-    # Break the safe local optimum: a hop that risks a fall must not be a -50 gamble
-    # for a tiny climbing bonus. Soften the fall penalty so the policy can experiment
-    # with jumping, and drop the per-step survival reward so "drive around and stay
-    # alive" is no longer a profitable do-nothing strategy.
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-10.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-50.0)
     time_conditioned_penalty = RewTerm(
         func=mdp.is_terminated_term,
-        weight=-20.0,
+        weight=-50.0,
         params={"term_keys": "time_illegal_contact"},
     )
-    is_alive = RewTerm(mdp.is_alive, weight=0.0)
+    is_alive = RewTerm(mdp.is_alive, weight=0.1)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_height_scan,
         weight=1.5,
@@ -171,7 +166,7 @@ class FlamingoRewardsCfg():
     # makes the flat jump env jump.
     jump_airborne_bonus = RewTerm(
         func=mdp.base_height_bonus_airborne_on_stair,
-        weight=0.0,  # GAP task: disabled — height-over-gap-floor would over-reward hovering
+        weight=10.0,
         params={
             "standing_height": 0.26,
             "height_scan_cfg": SceneEntityCfg("height_scanner"),
@@ -186,24 +181,12 @@ class FlamingoRewardsCfg():
     # jumping to correlate with an actual step.
     airborne_no_stair_penalty = RewTerm(
         func=mdp.airborne_no_stair_penalty,
-        weight=0.0,  # GAP task: disabled — it penalized the airborne takeoff from the flat platform
+        weight=-3.0,
         params={
             "height_scan_cfg": SceneEntityCfg("height_scanner"),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_wheel_link"]),
             "height_threshold": 0.05,
             "force_threshold": 1.0,
-        },
-    )
-    # GAP task: reward forward speed while airborne = leaping across the gap. This is
-    # the core "crossing pays" signal — the only way to make forward progress over a
-    # gap (which the wheels can't roll across) is to jump it.
-    airborne_forward_progress = RewTerm(
-        func=mdp.airborne_forward_progress,
-        weight=3.0,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_wheel_link"]),
-            "force_threshold": 1.0,
-            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
 
@@ -291,19 +274,14 @@ class FlamingoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             tg.curriculum = True
             tg.size = (10.0, 10.0)
             tg.border_width = 2.5
-            # GAP terrain: spawn on the central platform, surrounded by a gap on all
-            # sides. To go anywhere (and satisfy the velocity command) the robot MUST
-            # jump the gap — wheels can't roll across (they fall in). This removes the
-            # safe "drive around" basin and forces the jump. gap_width is the
-            # curriculum difficulty: 0.1m (easy) -> 0.6m (hard).
-            tg.difficulty_range = (0.0, 1.0)
-            tg.sub_terrains = {
-                "gap": terrain_gen.MeshGapTerrainCfg(
-                    proportion=1.0,
-                    gap_width_range=(0.1, 0.6),
-                    platform_width=2.5,
-                ),
-            }
+            # Floor back to 0.05 (~2.5cm steps) so the distance-based terrain
+            # curriculum can ratchet from trivial steps the robot can drive over;
+            # 0.3 (~5.3cm) was unclimbable at level 0, pinning terrain_levels at 0.
+            tg.difficulty_range = (0.05, 1.0)
+            stair_cfg = tg.sub_terrains.get("hf_pyramid_stair_inv")
+            if stair_cfg is not None:
+                stair_cfg.platform_width = 2.5
+                stair_cfg.step_width = 0.5
 
         # Enable pos_z command so robot learns to lift legs on stairs
         self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
