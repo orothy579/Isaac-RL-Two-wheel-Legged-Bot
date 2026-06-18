@@ -281,3 +281,21 @@ def measure_contact_forces(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -
     RL_contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids[2]]
     RR_contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids[3]]
     return torch.concat([FL_contact_forces,FR_contact_forces,RL_contact_forces,RR_contact_forces],dim=1)
+
+def height_scan_wheel(
+    env: ManagerBasedEnv,
+    sensor_cfg: SceneEntityCfg,
+    offset: float = 0.5,
+) -> torch.Tensor:
+    """Height scan from the given sensor w.r.t. the average wheel height.
+
+    The provided offset (Defaults to 0.5) is subtracted from the returned values.
+    """
+    sensor: RayCaster = env.scene.sensors[sensor_cfg.name]
+    asset: RigidObject = env.scene["robot"]
+    
+    foot_ids = asset.find_bodies(".*_wheel_link")[0]
+    foot_z = asset.data.body_pos_w[:, foot_ids, 2]
+    mean_foot_z = foot_z.mean(dim=1).unsqueeze(1)
+    
+    return mean_foot_z - sensor.data.ray_hits_w[..., 2] - offset

@@ -24,7 +24,7 @@ class FlamingoPPORunnerCfg(CoRlPolicyRunnerCfg):
     experiment_description = "test"
     empirical_normalization = False
     policy = CoRlPpoActorCriticCfg(
-        init_noise_std=1.0,
+        init_noise_std=0.3,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
@@ -33,7 +33,7 @@ class FlamingoPPORunnerCfg(CoRlPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,
+        entropy_coef=0.0,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=5.0e-4,
@@ -130,7 +130,53 @@ class FlamingoLightRoughPPORunnerCfg_Stand_Drive(FlamingoPPORunnerCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        self.max_iterations = 50000
+        self.max_iterations = 3000
         self.experiment_name = "Flamingo_Light_Rough_Stand_Drive"
         self.policy.actor_hidden_dims = [512, 256, 128]
         self.policy.critic_hidden_dims = [512, 256, 128]
+
+        # ── MOO: Lagrangian Reward Autotuning ────────────────────────────────
+        # Ref: JJUNE0 et al., "isaaclab_add_reward_autotuning" (POSTECH, 2024)
+        # Ref: Tessler et al., "Reward Constrained Policy Optimization" ICLR 2019
+        #
+        # Only terms that need auto-tuning are listed. Fixed terms like
+        # termination_penalty and is_alive are left out intentionally.
+        # Targets come from observing Episode_Reward/<term> in tensorboard
+        # after ~300 iters; adjust if the policy saturates or collapses.
+        self.moo = {
+            # Wheel clearance on stairs — want consistent lift when stairs appear
+            # weight=5.0, step_dt=0.02 → target≈0.001 means avg ~0.01m clearance
+            "wheel_height_bonus": {
+                "init_weight": 5.0,
+                "target": 0.001,
+                "lr": 3e-3,
+                "min_abs_weight": 0.5,
+                "max_abs_weight": 20.0,
+            },
+            # Velocity tracking: allow lower tracking when climbing stairs
+            # weight=2.0, exp returns ≤1.0 → target≈0.04 means ~73% tracking quality
+            "track_lin_vel_xy_exp": {
+                "init_weight": 2.0,
+                "target": 0.04,
+                "lr": 2e-3,
+                "min_abs_weight": 0.5,
+                "max_abs_weight": 5.0,
+            },
+            # Stair height tracking: positive reward only on stairs
+            # weight=2.0, exp returns ≤1.0 → target≈0.02 means decent height keeping
+            "stair_height_tracking": {
+                "init_weight": 2.0,
+                "target": 0.02,
+                "lr": 2e-3,
+                "min_abs_weight": 0.5,
+                "max_abs_weight": 5.0,
+            },
+            # Orientation: stairs cause pitch — allow more tilt than flat env
+            "flat_orientation": {
+                "init_weight": -0.3,
+                "target": -0.006,
+                "lr": 1e-3,
+                "min_abs_weight": 0.05,
+                "max_abs_weight": 2.0,
+            },
+        }

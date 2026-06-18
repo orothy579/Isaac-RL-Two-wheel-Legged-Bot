@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 import math
+import isaaclab.terrains as terrain_gen
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -34,7 +35,7 @@ class FlamingoRewardsCfg():
         func=mdp.track_base_height_exp_on_stair,
         weight=2.0,
         params={
-            "target_height": 0.31,
+            "target_height": 0.26, # origin : 0.31
             "std": 0.1,
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
             "sensor_cfg": SceneEntityCfg("height_scanner"),
@@ -45,8 +46,9 @@ class FlamingoRewardsCfg():
         func=mdp.track_ang_vel_z_link_exp, weight=1.0, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
     )
 
-    # Reduced: stair climbing naturally produces z velocity and pitch angular velocity
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_link_l2, weight=-0.5)
+    # Reduced further: -0.5 directly penalized the vertical velocity a jump needs
+    # (flat jump env has no such term). Keep a small value to damp bouncing on flat.
+    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_link_l2, weight=-0.1)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_link_l2, weight=-0.02)
 
     dof_pos_limits_shoulder = RewTerm(
@@ -73,7 +75,7 @@ class FlamingoRewardsCfg():
     )
     shoulder_motion_no_stair = RewTerm(
         func=mdp.shoulder_motion_no_stair,
-        weight=-0.5,
+        weight=0.0,  # GAP task: disabled — it penalized the shoulder crouch needed to jump
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_shoulder_joint"),
             "height_scan_cfg": SceneEntityCfg("height_scanner"),
@@ -85,9 +87,9 @@ class FlamingoRewardsCfg():
     flat_orientation = RewTerm(func=mdp.flat_euler_angle_l2, weight=-0.3)
     base_height = RewTerm(
         func=mdp.base_height_adaptive_l2,
-        weight=-10.0,  # Reduced from -25.0: target height shifts as robot climbs stairs
+        weight=-5.0,  # Reduced from -25.0: target height shifts as robot climbs stairs
         params={
-            "target_height": 0.31,
+            "target_height": 0.26, #origin 0.31
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
         },
     )
@@ -114,15 +116,19 @@ class FlamingoRewardsCfg():
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_wheel_joint"])},
     )
 
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.001)
 
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    # Break the safe local optimum: a hop that risks a fall must not be a -50 gamble
+    # for a tiny climbing bonus. Soften the fall penalty so the policy can experiment
+    # with jumping, and drop the per-step survival reward so "drive around and stay
+    # alive" is no longer a profitable do-nothing strategy.
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-10.0)
     time_conditioned_penalty = RewTerm(
         func=mdp.is_terminated_term,
-        weight=-1000.0,
+        weight=-20.0,
         params={"term_keys": "time_illegal_contact"},
     )
-    is_alive = RewTerm(mdp.is_alive, weight=0.1)
+    is_alive = RewTerm(mdp.is_alive, weight=0.0)
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_height_scan,
         weight=1.5,
@@ -131,7 +137,73 @@ class FlamingoRewardsCfg():
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_wheel_link"]),
             "height_scan_cfg": SceneEntityCfg("height_scanner"),
             "height_threshold": 0.05,
-            "air_time_threshold": 0.25,
+            "air_time_threshold": 0.12,
+        },
+    )
+    # Proportional wheel clearance bonus on stairs — stair-gated counterpart to
+    # feet_air_time_height_scan. Returns 0 on flat terrain so normal drive is unaffected.
+    wheel_height_bonus = RewTerm(
+        func=mdp.wheel_height_bonus_on_stair,
+        weight=15.0,
+        params={
+            "standing_wheel_height": 0.035,
+            "height_scan_cfg": SceneEntityCfg("height_scanner"),
+            "height_threshold": 0.05,
+            "asset_cfg": SceneEntityCfg("robot", body_names=[".*_wheel_link"]),
+        },
+    )
+    # Fixed bonus when BOTH wheels clear 0.10m on stairs (10cm step target).
+    # Flat env uses 0.15m; rough env uses 0.10m because step heights vary (curriculum).
+    wheel_height_target_bonus = RewTerm(
+        func=mdp.wheel_height_threshold_bonus_on_stair,
+        weight=15.0,
+        params={
+            "target_wheel_height": 0.07,
+            "height_scan_cfg": SceneEntityCfg("height_scanner"),
+            "height_threshold": 0.05,
+            "asset_cfg": SceneEntityCfg("robot", body_names=[".*_wheel_link"]),
+        },
+    )
+    # Ported from flat jump env (base_height_bonus_airborne): rewards the wheels
+    # actually leaving the ground on a stair, proportional to how high the base
+    # rises above the local terrain. This is the dense "lift-off" gradient that the
+    # position-only wheel bonuses above don't provide — the missing ingredient that
+    # makes the flat jump env jump.
+    jump_airborne_bonus = RewTerm(
+        func=mdp.base_height_bonus_airborne_on_stair,
+        weight=0.0,  # GAP task: disabled — height-over-gap-floor would over-reward hovering
+        params={
+            "standing_height": 0.26,
+            "height_scan_cfg": SceneEntityCfg("height_scanner"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_wheel_link"]),
+            "height_threshold": 0.05,
+            "force_threshold": 1.0,
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+        },
+    )
+    # Kills the spurious jump at spawn: penalize being fully airborne when NO stair
+    # is detected (privileged scan, reward-side only — policy stays blind). Forces
+    # jumping to correlate with an actual step.
+    airborne_no_stair_penalty = RewTerm(
+        func=mdp.airborne_no_stair_penalty,
+        weight=0.0,  # GAP task: disabled — it penalized the airborne takeoff from the flat platform
+        params={
+            "height_scan_cfg": SceneEntityCfg("height_scanner"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_wheel_link"]),
+            "height_threshold": 0.05,
+            "force_threshold": 1.0,
+        },
+    )
+    # GAP task: reward forward speed while airborne = leaping across the gap. This is
+    # the core "crossing pays" signal — the only way to make forward progress over a
+    # gap (which the wheels can't roll across) is to jump it.
+    airborne_forward_progress = RewTerm(
+        func=mdp.airborne_forward_progress,
+        weight=3.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_wheel_link"]),
+            "force_threshold": 1.0,
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
 
@@ -178,6 +250,7 @@ class FlamingoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.observations.none_stack_critic.lift_mask = None               # sensor disabled
         # base_pos_z without sensor: returns raw z height (still useful as privilege)
         self.observations.none_stack_critic.base_pos_z.params["sensor_cfg"] = None
+        self.observations.none_stack_critic.height_scan.func = mdp.height_scan_wheel
 
         # joint reset
         self.events.reset_robot_joints.params["position_range"] = (-0.1, 0.1)
@@ -216,13 +289,21 @@ class FlamingoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
             tg.num_rows = 10
             tg.num_cols = 10
             tg.curriculum = True
-            tg.size = (6.0, 6.0)
+            tg.size = (10.0, 10.0)
             tg.border_width = 2.5
-            tg.difficulty_range = (0.05, 0.6)
-            stair_cfg = tg.sub_terrains.get("hf_pyramid_stair_inv")
-            if stair_cfg is not None:
-                stair_cfg.platform_width = 1.2
-                stair_cfg.step_width = 0.35
+            # GAP terrain: spawn on the central platform, surrounded by a gap on all
+            # sides. To go anywhere (and satisfy the velocity command) the robot MUST
+            # jump the gap — wheels can't roll across (they fall in). This removes the
+            # safe "drive around" basin and forces the jump. gap_width is the
+            # curriculum difficulty: 0.1m (easy) -> 0.6m (hard).
+            tg.difficulty_range = (0.0, 1.0)
+            tg.sub_terrains = {
+                "gap": terrain_gen.MeshGapTerrainCfg(
+                    proportion=1.0,
+                    gap_width_range=(0.1, 0.6),
+                    platform_width=2.5,
+                ),
+            }
 
         # Enable pos_z command so robot learns to lift legs on stairs
         self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
@@ -230,12 +311,11 @@ class FlamingoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.commands.base_velocity.ranges.ang_vel_z = (-2.0, 2.0)
         self.commands.base_velocity.ranges.pos_z = (0.1931942, 0.3531942)
 
-        # terminations
+        # terminations: only terminate on hard base impact (not light brushes)
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
             "base_link",
-            "left_leg_link",
-            "right_leg_link",
         ]
+        self.terminations.base_contact.params["threshold"] = 20.0  
 
 
 @configclass
@@ -286,4 +366,5 @@ class FlamingoRoughEnvCfg_PLAY(FlamingoRoughEnvCfg):
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
             "left_leg_link",
             "right_leg_link",
+            "base_link"
         ]

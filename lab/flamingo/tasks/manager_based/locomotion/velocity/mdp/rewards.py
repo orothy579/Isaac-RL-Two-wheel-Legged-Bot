@@ -452,6 +452,144 @@ def wheel_height_threshold_bonus(
     return above_target * jump_commanded
 
 
+def wheel_height_bonus_on_stair(
+    env: ManagerBasedRLEnv,
+    standing_wheel_height: float,
+    height_scan_cfg: SceneEntityCfg,
+    height_threshold: float = 0.05,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=[".*_wheel_link"]),
+) -> torch.Tensor:
+    """Proportional wheel height bonus, active only when stairs are detected.
+
+    Gated on height_scanner variance (same stair detection as feet_air_time_height_scan).
+    On flat terrain: returns 0 → no incentive to lift wheels unnecessarily.
+    On stairs: returns (min_wheel_z − standing_wheel_height).clamp(0) per step.
+    """
+    height_scanner: RayCaster = env.scene.sensors[height_scan_cfg.name]
+    heights = height_scanner.data.ray_hits_w[..., 2]
+    stair_detected = ((heights.max(dim=1).values - heights.min(dim=1).values) > height_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    wheel_heights = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    min_wheel_height = wheel_heights.min(dim=1).values
+
+    return torch.clamp(min_wheel_height - standing_wheel_height, min=0.0) * stair_detected
+
+
+def wheel_height_threshold_bonus_on_stair(
+    env: ManagerBasedRLEnv,
+    target_wheel_height: float,
+    height_scan_cfg: SceneEntityCfg,
+    height_threshold: float = 0.05,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=[".*_wheel_link"]),
+) -> torch.Tensor:
+    """Fixed bonus when BOTH wheels exceed target_wheel_height on stairs.
+
+    Gated on stair detection so it doesn't fire on flat ground.
+    target_wheel_height should match the typical stair riser (e.g. 0.10m for 10cm step).
+    """
+    height_scanner: RayCaster = env.scene.sensors[height_scan_cfg.name]
+    heights = height_scanner.data.ray_hits_w[..., 2]
+    stair_detected = ((heights.max(dim=1).values - heights.min(dim=1).values) > height_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    wheel_heights = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    min_wheel_height = wheel_heights.min(dim=1).values
+
+    return (min_wheel_height > target_wheel_height).float() * stair_detected
+
+
+def base_height_bonus_airborne_on_stair(
+    env: ManagerBasedRLEnv,
+    standing_height: float,
+    height_scan_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    height_threshold: float = 0.05,
+    force_threshold: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names="base_link"),
+) -> torch.Tensor:
+    """Reward rising above normal stance while airborne on a detected stair.
+
+    Stair-gated port of ``base_height_bonus_airborne`` (flat jump env). This rewards
+    the *lift-off itself* — base height above the LOCAL terrain beyond ``standing_height``
+    — but only while the wheels are off the ground (max contact force below
+    ``force_threshold``) and a stair is detected. It supplies the dense "leave the
+    ground" gradient that the position-only wheel bonuses lack, which is what makes
+    the flat jump env actually jump. Height is measured relative to the local ground
+    (mean scanner hit) so simply standing on a higher step earns nothing — only
+    becoming airborne does.
+    """
+    height_scanner: RayCaster = env.scene.sensors[height_scan_cfg.name]
+    heights = height_scanner.data.ray_hits_w[..., 2]
+    stair_detected = ((heights.max(dim=1).values - heights.min(dim=1).values) > height_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    base_z = asset.data.root_link_pos_w[:, 2]
+    ground = heights.mean(dim=1)
+    # Guard against rare missed rays (inf): fall back to base_z so no spurious bonus.
+    ground = torch.where(torch.isfinite(ground), ground, base_z)
+    height_above = torch.clamp((base_z - ground) - standing_height, min=0.0)
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    net_forces = contact_sensor.data.net_forces_w_history[:, 0, sensor_cfg.body_ids, :]
+    max_wheel_force = torch.norm(net_forces, dim=-1).max(dim=1).values
+    is_airborne = (max_wheel_force < force_threshold).float()
+
+    return height_above * is_airborne * stair_detected
+
+
+def airborne_no_stair_penalty(
+    env: ManagerBasedRLEnv,
+    height_scan_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    height_threshold: float = 0.05,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize a full jump (all wheels off the ground) when NO stair is detected.
+
+    Uses the privileged height_scanner — reward-side only, so the policy stays blind.
+    Returns 1.0 when the robot is fully airborne on non-stair terrain; pair with a
+    negative weight to kill spurious jumps (e.g. the unconditional jump at spawn) and
+    force airborne behaviour to correlate with an actual step. ``max wheel force <
+    force_threshold`` means every wheel is off the ground, so normal driving on flat
+    (always at least one loaded wheel) is unaffected.
+    """
+    height_scanner: RayCaster = env.scene.sensors[height_scan_cfg.name]
+    heights = height_scanner.data.ray_hits_w[..., 2]
+    stair_detected = ((heights.max(dim=1).values - heights.min(dim=1).values) > height_threshold).float()
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    net_forces = contact_sensor.data.net_forces_w_history[:, 0, sensor_cfg.body_ids, :]
+    max_wheel_force = torch.norm(net_forces, dim=-1).max(dim=1).values
+    is_airborne = (max_wheel_force < force_threshold).float()
+
+    return is_airborne * (1.0 - stair_detected)
+
+
+def airborne_forward_progress(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    force_threshold: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward forward speed while airborne — i.e. leaping across a gap.
+
+    When all wheels are off the ground (max wheel contact force < force_threshold)
+    the robot is in its ballistic phase; reward the base-frame forward velocity so
+    that jumping ACROSS a gap pays (the wheeled robot cannot roll across, so the
+    only way to make forward progress over the gap is to jump). Returns 0 while
+    grounded, so it does not reward normal driving — only the crossing.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    net_forces = contact_sensor.data.net_forces_w_history[:, 0, sensor_cfg.body_ids, :]
+    max_wheel_force = torch.norm(net_forces, dim=-1).max(dim=1).values
+    is_airborne = (max_wheel_force < force_threshold).float()
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    fwd_speed = asset.data.root_lin_vel_b[:, 0].clamp(min=0.0)
+    return fwd_speed * is_airborne
+
+
 def feet_air_time_z_cmd(
     env: ManagerBasedRLEnv,
     command_name: str,
