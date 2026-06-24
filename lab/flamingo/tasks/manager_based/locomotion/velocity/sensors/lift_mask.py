@@ -150,9 +150,9 @@ class LiftMask(RayCaster):
                 self.ray_visualizer_red.set_visibility(False)
 
     def _debug_vis_callback(self, event):
-        # Skip visualization until sensor data is fully initialized
-        if self._data.ray_hits_w is None or self._data.mask is None:
-            return
+        # Ensure mask and ray hits are valid
+        if self._data.mask is None:
+            self._data.mask = torch.zeros((self._data.ray_hits_w.shape[0], 1), dtype=torch.float32)
 
         # Get indices where mask is 0 and 1
         indices_0 = (self._data.mask == 0).nonzero(as_tuple=True)[0]

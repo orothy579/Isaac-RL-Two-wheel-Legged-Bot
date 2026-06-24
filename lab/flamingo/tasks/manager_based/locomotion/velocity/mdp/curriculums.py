@@ -70,3 +70,63 @@ def modify_base_velocity_range(
         for key, target_range in mod_range.items():
             if hasattr(command_term.cfg.ranges, key):
                 setattr(command_term.cfg.ranges, key, target_range)
+
+def modify_action_scale_linear(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    action_name: str,
+    start_scale: float,
+    end_scale: float,
+    num_steps: int,
+    start_step: int = 0,
+):
+    """Linearly modifies the scale of an action term.
+
+    Example:
+        wheel action scale: 0.0 -> 1.0 over 5000 steps.
+
+    Args:
+        env: The environment instance.
+        env_ids: Environment ids. Not used here, but required by curriculum manager.
+        action_name: Name of the action term, e.g. "wheel_vel".
+        start_scale: Initial action scale.
+        end_scale: Final action scale.
+        num_steps: Number of env steps required to reach end_scale.
+        start_step: Step at which curriculum starts.
+    """
+    del env_ids  # unused
+
+    # before curriculum starts
+    if env.common_step_counter < start_step:
+        target_scale = start_scale
+    else:
+        progress = (env.common_step_counter - start_step) / float(num_steps)
+        progress = max(0.0, min(1.0, progress))
+        target_scale = start_scale + progress * (end_scale - start_scale)
+
+    # get action term
+    action_term = env.action_manager.get_term(action_name)
+
+    # update config value
+    if hasattr(action_term, "cfg") and hasattr(action_term.cfg, "scale"):
+        action_term.cfg.scale = target_scale
+
+    # update runtime cached scale
+    # Isaac Lab action terms often cache cfg.scale internally,
+    # so changing cfg.scale alone may not be enough.
+    if hasattr(action_term, "_scale"):
+        if isinstance(action_term._scale, torch.Tensor):
+            action_term._scale[:] = target_scale
+        else:
+            action_term._scale = target_scale
+
+    if hasattr(action_term, "scale"):
+        if isinstance(action_term.scale, torch.Tensor):
+            action_term.scale[:] = target_scale
+        else:
+            try:
+                action_term.scale = target_scale
+            except AttributeError:
+                pass
+
+    return torch.tensor(target_scale, device=env.device)

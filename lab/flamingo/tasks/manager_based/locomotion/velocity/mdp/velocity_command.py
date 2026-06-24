@@ -10,6 +10,7 @@ import numpy as np
 
 from isaaclab.envs.mdp import UniformVelocityCommand
 from isaaclab.envs.mdp.commands.commands_cfg import UniformVelocityCommandCfg
+from isaaclab.utils.math import euler_xyz_from_quat, quat_apply_inverse
 
 
 if TYPE_CHECKING:
@@ -85,7 +86,7 @@ class UniformVelocityWithZCommand(UniformVelocityCommand):
 
         # Position command - z direction
         if self.track_z_flag:
-            self.vel_command_b[env_ids, 3] = self.gcd(env_ids, 5)
+            self.vel_command_b[env_ids, 3] = self.gcd(env_ids, 2)
         else:
             self.vel_command_b[env_ids, 3] = 0.0
         # Heading target

@@ -20,6 +20,6 @@ __version__ = LAB_TASKS_METADATA["package"]["version"]
 from isaaclab_tasks.utils import import_packages
 
 # The blacklist is used to prevent importing configs from sub-packages
-_BLACKLIST_PKGS = ["utils"]
+_BLACKLIST_PKGS = ["utils", "flamingo_4w4l_env", "flamingo_env","flamingo_light_env_old"]
 # Import all configs in this package
 import_packages(__name__, _BLACKLIST_PKGS)

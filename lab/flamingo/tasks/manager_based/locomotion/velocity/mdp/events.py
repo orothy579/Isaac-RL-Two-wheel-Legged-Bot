@@ -384,7 +384,51 @@ def reset_root_state_uniform(
     asset.write_root_link_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)
     asset.write_root_com_velocity_to_sim(velocities, env_ids=env_ids)
 
+def randomize_rigid_body_mass_inertia(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    mass_inertia_distribution_params: tuple[float, float],
+    operation: Literal["add", "scale", "abs"],
+    distribution: Literal["uniform", "log_uniform", "gaussian"] = "uniform",
+):
+    """Randomize the inertia of the bodies by adding, scaling, or setting random values.
 
+    This function allows randomizing the mass of the bodies of the asset. The function samples random values from the
+    given distribution parameters and adds, scales, or sets the values into the physics simulation based on the operation.
+
+    .. tip::
+        This function uses CPU tensors to assign the body masses. It is recommended to use this function
+        only during the initialization of the environment.
+    """
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject | Articulation = env.scene[asset_cfg.name]
+
+    # resolve environment ids
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device="cpu")
+    else:
+        env_ids = env_ids.cpu()
+
+    # resolve body indices
+    if asset_cfg.body_ids == slice(None):
+        body_ids = torch.arange(asset.num_bodies, dtype=torch.int, device="cpu")
+    else:
+        body_ids = torch.tensor(asset_cfg.body_ids, dtype=torch.int, device="cpu")
+
+    # get the current inertias of the bodies (num_assets, num_bodies)
+    inertias = asset.root_physx_view.get_inertias().clone()
+    masses = asset.root_physx_view.get_masses().clone()
+
+    masses = _randomize_prop_by_op(
+        masses, mass_inertia_distribution_params, env_ids, body_ids, operation=operation, distribution=distribution
+    )
+    scale = masses / asset.root_physx_view.get_masses()
+    inertias *= scale.unsqueeze(-1)
+
+    asset.root_physx_view.set_masses(masses, env_ids)
+    asset.root_physx_view.set_inertias(inertias, env_ids)
+    
 def reset_root_state_with_random_orientation(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
@@ -570,3 +614,85 @@ def reset_joints_by_offset(
     # set into the physics simulation
     asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
+def randomize_wheel_action_scale_mask(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    action_name: str = "wheel_vel",
+    zero_ratio: float = 0.5,
+):
+    """Randomly disables wheel actions for a subset of environments.
+
+    This event creates an env-wise mask for a wheel action term.
+
+    Example:
+        wheel action cfg scale = 0.25
+
+        mask = 0.0 -> final wheel action = 0.0
+        mask = 1.0 -> final wheel action = raw_action * 0.25
+
+    Note:
+        This function only creates/updates the mask.
+        The action term must multiply this mask inside process_actions().
+    """
+    # get action term
+    action_term = env.action_manager.get_term(action_name)
+    device = env.device
+
+    # resolve env ids
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=device)
+    else:
+        env_ids = env_ids.to(device=device, dtype=torch.long)
+
+    # clamp zero ratio
+    zero_ratio = float(max(0.0, min(1.0, zero_ratio)))
+
+    # infer action dimension
+    if hasattr(action_term, "action_dim"):
+        action_dim = action_term.action_dim
+    elif hasattr(action_term, "_raw_actions"):
+        action_dim = action_term._raw_actions.shape[1]
+    elif hasattr(action_term, "raw_actions"):
+        action_dim = action_term.raw_actions.shape[1]
+    elif hasattr(action_term, "_processed_actions"):
+        action_dim = action_term._processed_actions.shape[1]
+    elif hasattr(action_term, "processed_actions"):
+        action_dim = action_term.processed_actions.shape[1]
+    else:
+        raise AttributeError(
+            f"Cannot infer action dimension from action term '{action_name}'. "
+            "Check the internal attributes of the action term."
+        )
+
+    # create persistent env-wise mask buffer
+    # shape: [num_envs, action_dim]
+    if not hasattr(action_term, "_action_scale_mask"):
+        action_term._action_scale_mask = torch.ones(
+            env.scene.num_envs,
+            action_dim,
+            device=device,
+            dtype=torch.float32,
+        )
+
+    num_envs_to_randomize = len(env_ids)
+
+    # default: wheel enabled
+    mask = torch.ones(
+        num_envs_to_randomize,
+        action_dim,
+        device=device,
+        dtype=torch.float32,
+    )
+
+    # randomly disable wheel action for zero_ratio of selected envs
+    num_zero = int(num_envs_to_randomize * zero_ratio)
+
+    if num_zero > 0:
+        perm = torch.randperm(num_envs_to_randomize, device=device)
+        zero_local_ids = perm[:num_zero]
+        mask[zero_local_ids, :] = 0.0
+
+    # update selected env masks
+    action_term._action_scale_mask[env_ids, :] = mask
+
+    return torch.mean(action_term._action_scale_mask[env_ids])

@@ -261,8 +261,8 @@ class ObservationsCfg:
             clip=(-1.0, 1.0),
         )
 
-        robot_joint_torque = ObsTerm(func=mdp.robot_joint_torque, scale=0.05) 
-        robot_joint_acc = ObsTerm(func=mdp.robot_joint_acc, scale=0.0025) 
+        # robot_joint_torque = ObsTerm(func=mdp.robot_joint_torque, scale=0.05) 
+        # robot_joint_acc = ObsTerm(func=mdp.robot_joint_acc, scale=0.0025) 
         contact_forces = ObsTerm(func=mdp.measure_contact_forces, scale=0.01, params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["FL_wheel_link", "FR_wheel_link", "RL_wheel_link", "RR_wheel_link"])})
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel_x_link, scale=2.0)
         current_reward = ObsTerm(func=mdp.current_reward)

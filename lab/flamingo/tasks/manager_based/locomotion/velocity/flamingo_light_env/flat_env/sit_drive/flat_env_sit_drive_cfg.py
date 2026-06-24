@@ -31,12 +31,12 @@ class FlamingoLightdofcommandsCfg(CommandsCfg):
 @configclass
 class FlamingoRewardsCfg():
     # -- task
-    track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_link_exp, weight=3.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
-    )
-    track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_link_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
-    )
+    # track_lin_vel_xy_exp = RewTerm(
+    #     func=mdp.track_lin_vel_xy_link_exp, weight=3.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+    # )
+    # track_ang_vel_z_exp = RewTerm(
+    #     func=mdp.track_ang_vel_z_link_exp, weight=1.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+    # )
 
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
 
@@ -44,8 +44,8 @@ class FlamingoRewardsCfg():
     # ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_link_l2, weight=-0.05)
 
     joint_deviation_shoulder = RewTerm(
-        func=mdp.joint_deviation_zero_shoulder_l1,
-        weight=-1.5,
+        func=mdp.joint_deviation_zero_l1,
+        weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_shoulder_joint"])},
     )
     
@@ -79,17 +79,79 @@ class FlamingoRewardsCfg():
     )
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-10.0)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-5.0e-5)
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-6)  # default: -2.5e-7
+    # dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-6)  # default: -2.5e-7
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)  # default: -0.01
     stay_alive = RewTerm(func=mdp.stay_alive, weight=0.25)  # default: 1.0
     base_height = RewTerm(
         func=mdp.base_height_adaptive_l2,
         weight=-25.0,  
         params={
-            "target_height": 0.33,   # 0.34205, 0.32
-            # "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+            "target_height": 0.133,   # 0.34205, 0.32
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
         },
     )
+    wheel_joint_velocity = RewTerm(
+        func=mdp.joint_velocity_penalty,
+        weight=-0.1,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=".*wheel_joint",
+            ),
+        },
+    )
+
+    # base_height_event = RewTerm(
+    #     func=mdp.base_height_adaptive_events_l2,
+    #     weight=-100.0,
+    #     params={
+    #         "target_height": 0.133,
+    #         "event_target_height": 0.32,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+    #     },
+    # )
+    # shoulder_action_zero_event0 = RewTerm(
+    #     func=mdp.shoulder_action_zero_when_event_zero,
+    #     weight=-0.1,   # 시작값, 필요시 -0.1 ~ -2.0 사이 튜닝
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=".*_shoulder_joint"),
+    #         "command_name": "event",   # 생략 가능. 기본적으로 event / yk_jump_command 자동 탐색
+    #     },
+    # )
+    # low_posture_speed_limit = RewTerm(
+    #     func=mdp.low_posture_speed_penalty,
+    #     weight=-0.1,
+    #     params={
+    #         "max_speed": 0.35,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+    #         "event_command_name": "event",
+    #     },
+    # )
+    # low_posture_wheel_limit = RewTerm(
+    #     func=mdp.low_posture_wheel_speed_penalty,
+    #     weight=-0.1,
+    #     params={
+    #         "max_wheel_vel": 8.0,
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_wheel_joint"]),
+    #         "event_command_name": "event",
+    #     },
+    # )
+    # track_base_height = RewTerm(
+    #     func=mdp.track_pos_z_exp,
+    #     weight=3.0,
+    #     params={
+    #         "temperature": 8.0,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+    #     },
+    # )
+    # track_base_height_fine_grained = RewTerm(
+    #     func=mdp.track_pos_z_exp,
+    #     weight=1.5,
+    #     params={
+    #         "temperature": 32.0,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+    #     },
+    # )
 
 @configclass
 class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
@@ -104,7 +166,7 @@ class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
         # scene
         self.scene.robot = FLAMINGO_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         
-        # self.scene.height_scanner = None
+        self.scene.height_scanner = None
         self.scene.base_height_scanner = None
         self.scene.left_wheel_height_scanner = None
         self.scene.right_wheel_height_scanner = None
@@ -121,7 +183,7 @@ class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
         self.observations.none_stack_policy.current_reward = None
         self.observations.none_stack_policy.is_contact = None
         self.observations.none_stack_policy.lift_mask = None
-        # self.observations.none_stack_policy.height_scan = None
+        self.observations.none_stack_policy.height_scan = None
         
         if hasattr(self.observations.none_stack_policy.base_pos_z, "params"):
             self.observations.none_stack_policy.base_pos_z.params["sensor_cfg"] = None
@@ -132,7 +194,7 @@ class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
         self.observations.none_stack_policy.event_commands = None
         self.observations.none_stack_critic.roll_pitch_commands = None
         self.observations.none_stack_critic.event_commands = None
-        # self.observations.none_stack_critic.height_scan = None
+        self.observations.none_stack_critic.height_scan = None
         self.observations.none_stack_critic.base_height_scan = None
         self.observations.none_stack_critic.left_wheel_height_scan = None
         self.observations.none_stack_critic.right_wheel_height_scan = None
@@ -140,7 +202,7 @@ class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
         #! ********************************************************* !#
 
         # reset_robot_joint_zero should be called here
-        self.events.reset_robot_joints.params["position_range"] = (-0.1, 0.1)
+        self.events.reset_robot_joints.params["position_range"] = (-0.2, 0.2)
         # self.events.push_robot = True
         self.events.push_robot.interval_range_s = (10.0, 15.0)
         self.events.push_robot.params = {
@@ -175,17 +237,17 @@ class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
         self.curriculum.terrain_levels = None
 
         # commands
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.0, 0.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.5, 2.5)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.0, 0.0)
         self.commands.base_velocity.ranges.heading = (-0.0, 0.0)
         self.commands.base_velocity.ranges.pos_z = (0.0, 0.0)
         
         # terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            "base_link",
-            "left_shoulder_link",
-            "right_shoulder_link",
+            # "base_link",
+            # "left_shoulder_link",
+            # "right_shoulder_link",
             # "left_leg_link",
             # "right_leg_link",
         ]
@@ -245,18 +307,17 @@ class FlamingoFlatEnvCfg_PLAY(FlamingoFlatEnvCfg):
         self.curriculum.terrain_levels = None
 
         # commands
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.0, 0.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-2.5, 2.5)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.0, 0.0)
         self.commands.base_velocity.ranges.heading = (-0.0, 0.0)
         self.commands.base_velocity.ranges.pos_z = (0.0, 0.0)
         
-        
         # terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            "base_link",
-            "left_shoulder_link",
-            "right_shoulder_link",
+            # "base_link",
+            # "left_shoulder_link",
+            # "right_shoulder_link",
             # "left_leg_link",
             # "right_leg_link",
         ]

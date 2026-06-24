@@ -10,7 +10,7 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
 import lab.flamingo.tasks.manager_based.locomotion.velocity.mdp as mdp
-from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.velocity_env_cfg import (
+from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env_old.velocity_env_cfg import (
     LocomotionVelocityFlatEnvCfg,
     TerminationsCfg,
 )

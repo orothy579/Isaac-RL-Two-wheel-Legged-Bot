@@ -19,7 +19,7 @@ from isaaclab.managers import SceneEntityCfg
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-from isaaclab.sensors import ContactSensor
+
 
 def terrain_out_of_bounds(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), distance_buffer: float = 3.0
@@ -50,31 +50,24 @@ def terrain_out_of_bounds(
         return torch.logical_or(x_out_of_bounds, y_out_of_bounds)
     else:
         raise ValueError("Received unsupported terrain type, must be either 'plane' or 'generator'.")
-
-
-def time_illegal_contact(
+    
+def specific_joint_lower_limit_termination(
     env: ManagerBasedRLEnv,
-    sensor_cfg: SceneEntityCfg,
-    time_threshold: float,
-) -> torch.Tensor:
-    """선택한 body들 중 하나라도 연속 접촉 시간이 임계치를 넘으면 종료(True)."""
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    # [N_env, len(body_ids)]
-    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
-
-    return torch.any(contact_time >= time_threshold, dim=1)
-
-
-def base_height_too_low(
-    env: ManagerBasedRLEnv,
-    minimum_height: float,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    joint_names: list[str] | None = None,
+    threshold: float = -0.72,
 ) -> torch.Tensor:
-    """Terminate if the robot base height drops below minimum_height.
-
-    Detects crawling and fallen states regardless of contact force magnitude.
-    Use minimum_height well below standing height (0.31m) but above ground (0.0m),
-    e.g. 0.15m, so normal jumps are unaffected.
-    """
+    """Terminate when any specified joint goes below the given threshold."""
     asset: RigidObject = env.scene[asset_cfg.name]
-    return asset.data.root_link_pos_w[:, 2] < minimum_height
+
+    if joint_names is None:
+        joint_names = ["left_shoulder_joint", "right_shoulder_joint"]
+
+    # joint index 찾기
+    joint_ids = [asset.find_joints(name)[0][0] for name in joint_names]
+
+    # 해당 조인트 위치 추출
+    joint_pos = asset.data.joint_pos[:, joint_ids]
+
+    # 하나라도 threshold보다 작으면 terminate
+    return (joint_pos < threshold).any(dim=1)
