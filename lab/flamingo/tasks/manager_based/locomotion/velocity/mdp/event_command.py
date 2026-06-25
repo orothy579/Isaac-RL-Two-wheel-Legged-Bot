@@ -51,7 +51,8 @@ class EventCommand(CommandTerm):
         
         self.robot: Articulation = env.scene[cfg.asset_name]
         self.time_elapsed = torch.zeros(self.num_envs, device=self.device)
-        self.event_command = torch.zeros(self.num_envs,1, dtype=torch.float32, device=self.device)
+        # column 0: active flag (0/1), column 1: elapsed time since the event turned active [s]
+        self.event_command = torch.zeros(self.num_envs, 2, dtype=torch.float32, device=self.device)
         
         self.event_during_time = cfg.event_during_time
         self.is_standing_env = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -101,7 +102,8 @@ class EventCommand(CommandTerm):
                                         self.time_elapsed + self._env.step_dt,
                                         0.0)
         self.event_command[:, 0] = torch.logical_and(self.event_command[:,0]==1.0 , self.time_elapsed <= self.event_during_time).float()
-        # self.event_command[:,1] = self.time_elapsed
+        # expose elapsed time (only meaningful while the event is active)
+        self.event_command[:, 1] = self.time_elapsed * self.event_command[:, 0]
 
         reset_env_ids = self._env.reset_buf.nonzero(as_tuple=False).flatten()
         if len(reset_env_ids) > 0:

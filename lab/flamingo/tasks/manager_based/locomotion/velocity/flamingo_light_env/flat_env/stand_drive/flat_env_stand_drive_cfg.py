@@ -46,17 +46,17 @@ class FlamingoRewardsCfg():
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_link_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_link_l2, weight=-0.05)
 
-    # joint_target_deviation_range = RewTerm(
-    #     func=mdp.joint_target_deviation_range_l1_inv,
-    #     weight=1.0,
-    #     params={
-    #         "min_angle": -0.7,
-    #         "max_angle": -0.55,
-    #         "in_range_reward": 1.0,
-    #         "cmd_threshold": 0.0,
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=".*_shoulder_joint"),
-    #     },
-    # )
+    joint_target_deviation_range = RewTerm(
+        func=mdp.joint_target_deviation_range_l1_inv,
+        weight=1.0,
+        params={
+            "min_angle": -0.7,
+            "max_angle": -0.55,
+            "in_range_reward": 1.0,
+            "cmd_threshold": 0.0,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_shoulder_joint"),
+        },
+    )
 
     dof_pos_limits_shoulder = RewTerm(
         func=mdp.joint_pos_limits,
@@ -86,9 +86,9 @@ class FlamingoRewardsCfg():
     flat_orientation = RewTerm(func=mdp.flat_euler_angle_l2, weight=-1.0)
     base_height = RewTerm(
         func=mdp.base_height_adaptive_l2,
-        weight=-50.0,
+        weight=-25.0,
         params={
-            "target_height": 0.31,  # default" 0.310
+            "target_height": 0.33,  # default" 0.310
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
         },
     )
@@ -118,7 +118,7 @@ class FlamingoRewardsCfg():
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)  # default: -0.01
 
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
-    is_alive = RewTerm(mdp.is_alive, weight=0.1)
+    # is_alive = RewTerm(mdp.is_alive, weight=0.1)
 
 @configclass
 class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
