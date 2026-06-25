@@ -79,8 +79,8 @@ class FlamingoRewardsCfg():
     )
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-10.0)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-5.0e-5)
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-6)  # default: -2.5e-7
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.1)  # default: -0.01
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)  # default: -2.5e-7
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)  # default: -0.01
     stay_alive = RewTerm(func=mdp.stay_alive, weight=0.25)  # default: 1.0
     base_height = RewTerm(
         func=mdp.base_height_adaptive_l2,
@@ -107,7 +107,19 @@ class FlamingoRewardsCfg():
 
         },
     )
+    height_exp = RewTerm(
+        func=mdp.height_exp_reward,
+        weight=1.0,
+        params={
+            "alpha": 2.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "base_sensor_cfg": SceneEntityCfg("base_height_scanner"),
+            "left_wheel_sensor_cfg": SceneEntityCfg("left_wheel_height_scanner"),
+            "right_wheel_sensor_cfg": SceneEntityCfg("right_wheel_height_scanner"),
+        },
+    )
 @configclass
+
 class FlamingoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
     rewards: FlamingoRewardsCfg = FlamingoRewardsCfg()
     # commands: FlamingoLightdofcommandsCfg = FlamingoLightdofcommandsCfg()

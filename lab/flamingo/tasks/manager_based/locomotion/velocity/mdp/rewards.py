@@ -2304,3 +2304,62 @@ def terrain_level_reward(
         return torch.zeros_like(levels)
 
     return torch.clamp(levels / float(num_rows - 1), min=0.0, max=1.0)
+
+
+def height_exp_reward(
+    env: ManagerBasedRLEnv,
+    alpha: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    base_sensor_cfg: SceneEntityCfg | None = None,
+    left_wheel_sensor_cfg: SceneEntityCfg | None = None,
+    right_wheel_sensor_cfg: SceneEntityCfg | None = None,
+) -> torch.Tensor:
+    """Exponential reward that increases as the base and wheel heights (z-values) grow.
+
+    Computes the relative height of the base link w.r.t. each sensor's ground
+    measurement, averages them, and returns ``exp(alpha * mean_height)``.
+
+    Args:
+        env: The RL environment instance.
+        alpha: Exponential scaling factor. Larger values make the reward
+            grow more steeply with height.
+        asset_cfg: Configuration for the robot asset (default: ``"robot"``).
+        base_sensor_cfg: Scene entity config for the base height ray-caster sensor.
+        left_wheel_sensor_cfg: Scene entity config for the left wheel height
+            ray-caster sensor.
+        right_wheel_sensor_cfg: Scene entity config for the right wheel height
+            ray-caster sensor.
+
+    Returns:
+        Tensor of shape ``(num_envs,)`` with the exponential reward value.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    root_z = asset.data.root_link_pos_w[:, 2]  # (num_envs,)
+
+    heights = []
+
+    # base height: root_z - ground_z measured by base_height_scanner
+    if base_sensor_cfg is not None:
+        base_sensor: RayCaster = env.scene[base_sensor_cfg.name]
+        ground_z_base = torch.mean(base_sensor.data.ray_hits_w[..., 2], dim=1)
+        heights.append(root_z - ground_z_base)
+
+    # left wheel height: root_z - ground_z measured by left_wheel_height_scanner
+    if left_wheel_sensor_cfg is not None:
+        left_sensor: RayCaster = env.scene[left_wheel_sensor_cfg.name]
+        ground_z_left = torch.mean(left_sensor.data.ray_hits_w[..., 2], dim=1)
+        heights.append(root_z - ground_z_left)
+
+    # right wheel height: root_z - ground_z measured by right_wheel_height_scanner
+    if right_wheel_sensor_cfg is not None:
+        right_sensor: RayCaster = env.scene[right_wheel_sensor_cfg.name]
+        ground_z_right = torch.mean(right_sensor.data.ray_hits_w[..., 2], dim=1)
+        heights.append(root_z - ground_z_right)
+
+    if len(heights) == 0:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    # average height across all provided sensors
+    mean_height = torch.stack(heights, dim=0).mean(dim=0)  # (num_envs,)
+
+    return torch.exp(alpha * mean_height)
