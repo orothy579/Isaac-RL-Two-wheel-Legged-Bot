@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 def lin_vel_z_event(
     env: ManagerBasedRLEnv,
     event_command_name: str = "event",
-    event_time_range: tuple = (0.3, 0.8),
+    event_time_range: tuple = (0.3, 0.5),
     max_up_vel: float = 4.0,
     up_vel_coef: float = 20.0,
     down_vel_coef: float = 0.0,
@@ -90,7 +90,7 @@ def lin_vel_z_event(
 def feet_off_ground_event(
     env: ManagerBasedRLEnv,
     event_command_name: str = "event",
-    event_time_range: tuple = (0.3, 0.8),
+    event_time_range: tuple = (0.3, 0.5),
     sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
 ) -> torch.Tensor:
     """Reward both wheels leaving the ground during the take-off window.
@@ -115,7 +115,7 @@ def feet_off_ground_event(
 def push_ground_event(
     env: ManagerBasedRLEnv,
     event_command_name: str = "event",
-    event_time_range: tuple = (0.3, 0.8),
+    event_time_range: tuple = (0.3, 0.5),
     max_force: float = 300.0,
     sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
 ) -> torch.Tensor:

@@ -97,7 +97,7 @@ class FlamingoJumpRewardsCfg(StandDriveRewardsCfg):
     )
     push_ground_event = RewTerm(
         func=mdp_jump.push_ground_event,
-        weight=0.05,
+        weight=0.1,
         params={
             "event_command_name": "event",
             "event_time_range": (0.3, 0.8),
