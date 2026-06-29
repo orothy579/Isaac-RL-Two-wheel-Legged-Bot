@@ -1,1 +1,3 @@
 from .stand_drive import rough_env_stand_drive_cfg
+from .stair_drive import rough_env_stair_drive_cfg
+from .stair_jump import rough_env_stair_jump_cfg

@@ -100,6 +100,46 @@ gym.register(
     },
 )
 
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_drive_cfg.FlamingoRoughEnvCfg,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_Stair,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Play-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_drive_cfg.FlamingoRoughEnvCfg_PLAY,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_Stair,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_jump_cfg.FlamingoRoughEnvCfg,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairJump,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-Play-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_jump_cfg.FlamingoRoughEnvCfg_PLAY,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairJump,
+    },
+)
+
 ###########################################Track Velocity##############################################
 
 
