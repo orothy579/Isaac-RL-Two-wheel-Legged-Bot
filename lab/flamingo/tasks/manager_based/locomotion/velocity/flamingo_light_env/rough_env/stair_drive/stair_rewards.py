@@ -15,6 +15,9 @@ from __future__ import annotations
 import torch
 from typing import TYPE_CHECKING
 
+from isaaclab.assets import RigidObject
+from isaaclab.managers import SceneEntityCfg
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -63,6 +66,37 @@ def reach_top_bonus(
     """Sparse one-step pulse (1.0) when the *top* required coin is collected."""
     term = env.command_manager.get_term(command_name)
     return term.just_reached_top
+
+
+def hop_up_event(
+    env: ManagerBasedRLEnv,
+    event_command_name: str = "stair_event",
+    event_time_range: tuple = (0.05, 0.25),
+    target_up_vel: float = 1.5,
+    temperature: float = 2.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward an upward take-off during the hop window — WITHOUT a vertical-alignment
+    penalty.
+
+    Unlike the flat-jump ``lin_vel_z_event`` (which multiplies by ``|v_z|/|v|`` and so
+    rewards a *pure vertical* jump and discourages forward motion), this rewards the
+    upward component alone. Combined with the forward velocity command and the
+    up-and-ahead coin target, it lets the robot hop forward *onto* the step instead of
+    bouncing in place.
+    """
+    cmd = env.command_manager.get_command(event_command_name)
+    flag = cmd[:, 0]
+    event_time = cmd[:, 1]
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    lin_vel_z = asset.data.root_lin_vel_w[:, 2]
+
+    window = torch.logical_and(
+        event_time >= event_time_range[0], event_time <= event_time_range[1]
+    ).float()
+    up_reward = torch.exp(-torch.abs((target_up_vel - lin_vel_z) / target_up_vel) * temperature)
+    return up_reward * flag * window
 
 
 def heading_to_coin_exp(

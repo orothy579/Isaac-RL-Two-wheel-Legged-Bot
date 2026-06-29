@@ -101,7 +101,9 @@ class CoinSequenceCommand(CommandTerm):
         origins = self.env.scene.env_origins[env_ids]  # (k, 3)
         idx = torch.arange(self.n_steps, device=self.device).float()  # (m,)
         dx = self.pit_half_width + (idx + 0.5) * self.cfg.step_width  # (m,)
-        dz = (idx + 1.0) * self.cfg.step_height  # (m,)
+        # height = tread surface + standing base height, so the coin sits at the robot's
+        # base level when it is standing on that step (collection / 3D reward target).
+        dz = (idx + 1.0) * self.cfg.step_height + self.cfg.coin_height_offset  # (m,)
         coins = torch.zeros(origins.shape[0], self.n_steps, 3, device=self.device)
         coins[:, :, 0] = origins[:, 0:1] + dx.unsqueeze(0)
         coins[:, :, 1] = origins[:, 1:2]
@@ -176,9 +178,8 @@ class CoinSequenceCommand(CommandTerm):
     def _debug_vis_callback(self, event):
         if not self.robot.is_initialized:
             return
-        coin = self._active_coin_w().clone()
-        coin[:, 2] += 0.1  # lift slightly so it sits above the tread
-        self.coin_visualizer.visualize(coin)
+        # coin already sits at base height (tread + coin_height_offset)
+        self.coin_visualizer.visualize(self._active_coin_w())
 
 
 GOLD_COIN_MARKER_CFG = VisualizationMarkersCfg(
@@ -228,5 +229,8 @@ class CoinSequenceCommandCfg(CommandTermCfg):
 
     collect_z_tol: float = 0.12
     """height gap [m] the robot must be within to collect a coin (prevents leaning to grab a higher coin)."""
+
+    coin_height_offset: float = 0.31
+    """height [m] above the tread to place the coin (= nominal standing base height)."""
 
     coin_visualizer_cfg: VisualizationMarkersCfg = GOLD_COIN_MARKER_CFG

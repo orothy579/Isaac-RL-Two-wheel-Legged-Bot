@@ -81,15 +81,15 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
         },
     )
     # -- hop rewards (small-step tuned; iterate from here)
-    jump_lin_vel_z = RewTerm(
-        func=mdp_jump.lin_vel_z_event,
-        weight=2.5,
+    # NOTE: stair-specific upward reward WITHOUT the flat-jump vertical-alignment
+    # penalty, so the robot hops up-AND-forward onto the step (not in place).
+    hop_up = RewTerm(
+        func=mdp_stair.hop_up_event,
+        weight=10.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),
-            "max_up_vel": 1.5,
-            "up_vel_coef": 10.0,
-            "down_vel_coef": 0.0,
+            "target_up_vel": 1.5,
             "temperature": 2.0,
         },
     )
