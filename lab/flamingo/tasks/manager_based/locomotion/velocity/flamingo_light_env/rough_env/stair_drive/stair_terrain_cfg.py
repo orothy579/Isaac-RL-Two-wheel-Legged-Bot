@@ -18,7 +18,7 @@ import isaaclab.terrains as terrain_gen
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 
 STEP_HEIGHT = 0.05
-STEP_WIDTH = 0.4
+STEP_WIDTH = 0.55
 PLATFORM_WIDTH = 2.5
 SUBTERRAIN_BORDER_WIDTH = 1.0
 TILE_SIZE = 10.0

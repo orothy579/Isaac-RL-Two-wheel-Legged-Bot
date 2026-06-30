@@ -49,7 +49,7 @@ class FlamingoStairJumpCommandsCfg(FlamingoStairCommandsCfg):
         step_threshold=0.03,  # hop when a >= 3 cm step is detected ahead
         forward_band=(0.15, 0.45),
         y_halfwidth=0.2,
-        event_during_time=0.5,
+        event_during_time=1.0,  # longer window: load (pre 0.25s) + take-off (0.25-0.6)
         cooldown=0.3,
         debug_vis=True,
     )
@@ -63,10 +63,11 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
     in favor of the 3D coin reward and a jump-gated base-height term.
     """
 
-    # 3D coin distance (height gap counted) so leaning can't game the dense reward
+    # 3D coin distance (height gap counted) so leaning can't game the dense reward.
+    # This is the main NON-farmable "get onto the next step" signal -> keep it strong.
     track_coin_xyz = RewTerm(
         func=mdp_stair.track_coin_xyz_exp,
-        weight=3.0,
+        weight=5.0,
         params={"command_name": "coin", "temperature": 1.0, "scaler": 1.0},
     )
     # base height held only while NOT hopping (so the body can rise during a hop)
@@ -80,34 +81,51 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
             "sensor_cfg": SceneEntityCfg("base_height_scanner"),
         },
     )
-    # -- hop rewards (small-step tuned; iterate from here)
-    # NOTE: stair-specific upward reward WITHOUT the flat-jump vertical-alignment
-    # penalty, so the robot hops up-AND-forward onto the step (not in place).
+    # -- hop rewards
+    # Strong take-off impulse (flat-jump strength via up_vel_coef) but no vertical-
+    # alignment, so it hops up-AND-forward. Farmable in place -> modest weight; the
+    # coin progress above must win. (Run 1 climbed because it kept this impulse;
+    # the weak hop_up that replaced it did not.)
     hop_up = RewTerm(
         func=mdp_stair.hop_up_event,
         weight=1.0,
         params={
             "event_command_name": "stair_event",
-            "event_time_range": (0.05, 0.25),
-            "target_up_vel": 1.5,
+            "event_time_range": (0.25, 0.6),
+            "target_up_vel": 2.5,
+            "up_vel_coef": 20.0,
             "temperature": 2.0,
+            "load_penalty_coef": 1.0,
         },
     )
+    # legs fold up (wheel clearance) WHILE moving forward -> clears the riser.
+    foot_clearance = RewTerm(
+        func=mdp_stair.foot_clearance_event,
+        weight=3.0,
+        params={
+            "event_command_name": "stair_event",
+            "event_time_range": (0.25, 0.7),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_wheel_link"),
+            "ground_sensor_cfg": SceneEntityCfg("base_height_scanner"),
+        },
+    )
+    # push-off and air-phase: small weights ONLY (both are farmable in place; raising
+    # them caused the in-place foot-stomping seen in the latest run).
     jump_push_ground = RewTerm(
         func=mdp_jump.push_ground_event,
         weight=0.05,
         params={
             "event_command_name": "stair_event",
-            "event_time_range": (0.05, 0.25),
+            "event_time_range": (0.25, 0.6),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
         },
     )
     jump_feet_off = RewTerm(
         func=mdp_jump.feet_off_ground_event,
-        weight=10.0,
+        weight=3.0,
         params={
             "event_command_name": "stair_event",
-            "event_time_range": (0.1, 0.4),
+            "event_time_range": (0.25, 0.6),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
         },
     )
@@ -125,6 +143,10 @@ def _setup_stair_jump(cfg) -> None:
     # swap dense coin reward (xy -> 3D) and base-height (plain -> jump-gated)
     cfg.rewards.track_coin_xy = None
     cfg.rewards.base_height = None
+    # a run-up take-off needs the body to PITCH; the inherited -10 flat-orientation
+    # penalty forbids that (flat-jump used only -1). Relax it for the jump task.
+    if cfg.rewards.flat_orientation_l2 is not None:
+        cfg.rewards.flat_orientation_l2.weight = -2.0
     # responsive step detection / fresher height map for hopping
     if cfg.scene.height_scanner is not None:
         cfg.scene.height_scanner.update_period = cfg.decimation * cfg.sim.dt

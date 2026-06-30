@@ -71,19 +71,24 @@ def reach_top_bonus(
 def hop_up_event(
     env: ManagerBasedRLEnv,
     event_command_name: str = "stair_event",
-    event_time_range: tuple = (0.05, 0.25),
-    target_up_vel: float = 1.5,
+    event_time_range: tuple = (0.25, 0.6),
+    target_up_vel: float = 2.5,
+    up_vel_coef: float = 20.0,
     temperature: float = 2.0,
+    load_penalty_coef: float = 1.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Reward an upward take-off during the hop window — WITHOUT a vertical-alignment
-    penalty.
+    """Strong take-off reward for the hop window — flat-jump *strength*, but WITHOUT
+    the vertical-alignment factor (stairs need up-AND-forward to land on the next step).
 
-    Unlike the flat-jump ``lin_vel_z_event`` (which multiplies by ``|v_z|/|v|`` and so
-    rewards a *pure vertical* jump and discourages forward motion), this rewards the
-    upward component alone. Combined with the forward velocity command and the
-    up-and-ahead coin target, it lets the robot hop forward *onto* the step instead of
-    bouncing in place.
+    Phases (``event_time`` since the window opened):
+    * ``< event_time_range[0]`` (load): penalize dropping, so the robot loads its legs.
+    * inside ``event_time_range`` (take-off): reward reaching ``target_up_vel`` upward,
+      scaled by ``up_vel_coef`` (this is the impulse the weak ``hop_up`` was missing —
+      run 1 climbed because it kept this coefficient).
+
+    NOTE: this term is farmable in place (a vertical hop also earns it), so keep its
+    weight modest and let the non-farmable coin/`reach_top` progress dominate.
     """
     cmd = env.command_manager.get_command(event_command_name)
     flag = cmd[:, 0]
@@ -92,11 +97,48 @@ def hop_up_event(
     asset: RigidObject = env.scene[asset_cfg.name]
     lin_vel_z = asset.data.root_lin_vel_w[:, 2]
 
+    pre_jump = (event_time < event_time_range[0]).float()
     window = torch.logical_and(
         event_time >= event_time_range[0], event_time <= event_time_range[1]
     ).float()
+
     up_reward = torch.exp(-torch.abs((target_up_vel - lin_vel_z) / target_up_vel) * temperature)
-    return up_reward * flag * window
+    # discourage uncontrolled falling before take-off (load the legs instead)
+    descent_vel = torch.clamp(-lin_vel_z, min=0.0)
+    load_penalty = torch.clamp(descent_vel - 1.0, min=0.0) * load_penalty_coef
+
+    return up_reward * up_vel_coef * flag * window - load_penalty * flag * pre_jump
+
+
+def foot_clearance_event(
+    env: ManagerBasedRLEnv,
+    event_command_name: str = "stair_event",
+    event_time_range: tuple = (0.25, 0.7),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_wheel_link"),
+    ground_sensor_cfg: SceneEntityCfg = SceneEntityCfg("base_height_scanner"),
+) -> torch.Tensor:
+    """Reward folding the legs up (wheel clearance) WHILE moving forward during a hop.
+
+    Encourages the robot to retract its wheels above the ground so they clear the riser
+    — the user's "legs fold to go higher". Scaled by forward speed so it pays only when
+    hopping *forward over* the step, not when bobbing in place (anti-farming).
+    """
+    cmd = env.command_manager.get_command(event_command_name)
+    flag = cmd[:, 0]
+    event_time = cmd[:, 1]
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    wheel_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # (N, n_wheels)
+
+    sensor = env.scene.sensors[ground_sensor_cfg.name]
+    ground_z = torch.mean(sensor.data.ray_hits_w[..., 2], dim=1, keepdim=True)  # (N,1)
+    clearance = torch.clamp(wheel_z - ground_z, min=0.0).mean(dim=1)  # avg wheel lift [m]
+
+    fwd_speed = torch.clamp(asset.data.root_lin_vel_b[:, 0], min=0.0)  # forward only
+    window = torch.logical_and(
+        event_time >= event_time_range[0], event_time <= event_time_range[1]
+    ).float()
+    return clearance * fwd_speed * flag * window
 
 
 def heading_to_coin_exp(
