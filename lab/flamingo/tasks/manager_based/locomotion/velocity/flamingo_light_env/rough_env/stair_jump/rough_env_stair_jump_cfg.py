@@ -85,7 +85,7 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
     # penalty, so the robot hops up-AND-forward onto the step (not in place).
     hop_up = RewTerm(
         func=mdp_stair.hop_up_event,
-        weight=10.0,
+        weight=1.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),
@@ -104,7 +104,7 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
     )
     jump_feet_off = RewTerm(
         func=mdp_jump.feet_off_ground_event,
-        weight=1.0,
+        weight=10.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.1, 0.4),
