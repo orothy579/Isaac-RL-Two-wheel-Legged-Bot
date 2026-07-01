@@ -38,6 +38,7 @@ def lin_vel_z_event(
     up_vel_coef: float = 20.0,
     down_vel_coef: float = 0.0,
     temperature: float = 2.0,
+    use_alignment: bool = True,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Reward an upward (z) take-off velocity during the jump window.
@@ -47,10 +48,14 @@ def lin_vel_z_event(
     * ``event_time < event_time_range[0]``  -> *pre-jump*: penalize falling so
       the robot loads its legs instead of dropping.
     * ``event_time in event_time_range``    -> *take-off*: reward matching the
-      target upward velocity, weighted by how well the velocity is aligned with
-      +z (a pure vertical jump).
+      target upward velocity.
     * just after the window                 -> optional reward for a controlled
       descent (``down_vel_coef``, off by default).
+
+    ``use_alignment``: if True (flat jump), the reward is scaled by ``|v_z|/|v|`` so a
+    *pure vertical* jump is preferred. Set False for stair climbing, where the robot
+    must move up-AND-forward to land on the next tread (a forward component should NOT
+    be penalized).
     """
     event_command = env.command_manager.get_command(event_command_name)
     flag = event_command[:, 0]
@@ -61,8 +66,11 @@ def lin_vel_z_event(
     lin_vel_z = lin_vel[:, 2]
     lin_vel_mag = torch.norm(lin_vel, dim=1) + 1e-6
 
-    # cosine alignment between velocity and the world +z axis
-    alignment = torch.abs(lin_vel_z / lin_vel_mag)
+    # cosine alignment between velocity and the world +z axis (optional)
+    if use_alignment:
+        alignment = torch.abs(lin_vel_z / lin_vel_mag)
+    else:
+        alignment = torch.ones_like(lin_vel_z)
 
     target_up_vel = max_up_vel
 
@@ -74,7 +82,8 @@ def lin_vel_z_event(
         event_time > event_time_range[1], event_time <= event_time_range[1] + 0.4
     ).float()
 
-    # penalize uncontrolled descent before take-off
+    # penalize uncontrolled descent before take-off (this is a FALL penalty, not a
+    # forward penalty — kept even when use_alignment is False)
     descent_vel = torch.clamp(-lin_vel_z, min=0.0)
     descent_penalty = torch.clamp(descent_vel - 1.0, min=0.0)
 

@@ -18,7 +18,7 @@ import isaaclab.terrains as terrain_gen
 from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 
 STEP_HEIGHT = 0.05
-STEP_WIDTH = 0.55
+STEP_WIDTH = 0.4
 PLATFORM_WIDTH = 2.5
 SUBTERRAIN_BORDER_WIDTH = 1.0
 TILE_SIZE = 10.0
@@ -34,7 +34,7 @@ STAIR_TERRAINS_CFG = TerrainGeneratorCfg(
     vertical_scale=0.005,
     slope_threshold=0.5,
     difficulty_range=(0.0, 1.0),  # no effect: step height range is a single value
-    use_cache=True,
+    use_cache=True,  # regenerate from the current cfg (avoid stale cached geometry)
     curriculum=False,
     sub_terrains={
         "stair_up": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(

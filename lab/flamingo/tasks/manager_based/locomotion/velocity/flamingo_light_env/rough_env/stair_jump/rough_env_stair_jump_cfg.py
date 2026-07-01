@@ -49,7 +49,7 @@ class FlamingoStairJumpCommandsCfg(FlamingoStairCommandsCfg):
         step_threshold=0.03,  # hop when a >= 3 cm step is detected ahead
         forward_band=(0.15, 0.45),
         y_halfwidth=0.2,
-        event_during_time=1.0,  # longer window: load (pre 0.25s) + take-off (0.25-0.6)
+        event_during_time=0.5,  # known-good jump window (bfbca92)
         cooldown=0.3,
         debug_vis=True,
     )
@@ -59,16 +59,22 @@ class FlamingoStairJumpCommandsCfg(FlamingoStairCommandsCfg):
 class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
     """Phase 1 rewards + hop rewards (gated on the stair-detect event).
 
-    ``track_coin_xy`` and the plain ``base_height`` are disabled in ``__post_init__``
-    in favor of the 3D coin reward and a jump-gated base-height term.
+    Coin guidance is removed (coins sat at the stair center and pinned the robot there);
+    the main climb driver is now ``stair_climb`` — an exponential per-step reward for
+    reaching a new highest step ANYWHERE on the stairs. All coin rewards + the plain
+    base-height are disabled in ``__post_init__``.
     """
 
-    # 3D coin distance (height gap counted) so leaning can't game the dense reward.
-    # This is the main NON-farmable "get onto the next step" signal -> keep it strong.
-    track_coin_xyz = RewTerm(
-        func=mdp_stair.track_coin_xyz_exp,
-        weight=5.0,
-        params={"command_name": "coin", "temperature": 1.0, "scaler": 1.0},
+    # MAIN CLIMB DRIVER: exponential reward per new highest step reached (any direction).
+    stair_climb = RewTerm(
+        func=mdp_stair.StairClimbProgress,
+        weight=1.0,
+        params={
+            "ground_sensor_cfg": SceneEntityCfg("base_height_scanner"),
+            "step_height": 0.05,
+            "growth": 2.0,   # step1->2, step2->4, step3->8, ... (per new step)
+            "coef": 1.0,
+        },
     )
     # base height held only while NOT hopping (so the body can rise during a hop)
     base_height_jump = RewTerm(
@@ -81,21 +87,22 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
             "sensor_cfg": SceneEntityCfg("base_height_scanner"),
         },
     )
-    # -- hop rewards
-    # Strong take-off impulse (flat-jump strength via up_vel_coef) but no vertical-
-    # alignment, so it hops up-AND-forward. Farmable in place -> modest weight; the
-    # coin progress above must win. (Run 1 climbed because it kept this impulse;
-    # the weak hop_up that replaced it did not.)
-    hop_up = RewTerm(
-        func=mdp_stair.hop_up_event,
-        weight=1.0,
+    # -- hop reward: run-1's jump_lin_vel_z, ROLLED BACK but with use_alignment=False
+    # (drops the |vz|/|v| factor that penalized forward motion). Keeps the pre-jump
+    # fall/load penalty. hop_up was removed: it was a duplicate of this.
+    # hop motor reward: known-good timing (bfbca92: take-off at 0.05-0.25 of the window),
+    # but use_alignment=False so the take-off may go up-AND-forward (not pure vertical).
+    jump_lin_vel_z = RewTerm(
+        func=mdp_jump.lin_vel_z_event,
+        weight=2.5,
         params={
             "event_command_name": "stair_event",
-            "event_time_range": (0.25, 0.6),
-            "target_up_vel": 2.5,
-            "up_vel_coef": 20.0,
+            "event_time_range": (0.05, 0.25),
+            "max_up_vel": 2.0,
+            "up_vel_coef": 10.0,
+            "down_vel_coef": 0.0,
             "temperature": 2.0,
-            "load_penalty_coef": 1.0,
+            "use_alignment": False,
         },
     )
     # legs fold up (wheel clearance) WHILE moving forward -> clears the riser.
@@ -104,28 +111,27 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
         weight=3.0,
         params={
             "event_command_name": "stair_event",
-            "event_time_range": (0.25, 0.7),
+            "event_time_range": (0.1, 0.4),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_wheel_link"),
             "ground_sensor_cfg": SceneEntityCfg("base_height_scanner"),
         },
     )
-    # push-off and air-phase: small weights ONLY (both are farmable in place; raising
-    # them caused the in-place foot-stomping seen in the latest run).
+    # push-off and air-phase: small weights ONLY (both are farmable in place).
     jump_push_ground = RewTerm(
         func=mdp_jump.push_ground_event,
         weight=0.05,
         params={
             "event_command_name": "stair_event",
-            "event_time_range": (0.25, 0.6),
+            "event_time_range": (0.05, 0.25),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
         },
     )
     jump_feet_off = RewTerm(
         func=mdp_jump.feet_off_ground_event,
-        weight=3.0,
+        weight=1.0,
         params={
             "event_command_name": "stair_event",
-            "event_time_range": (0.25, 0.6),
+            "event_time_range": (0.05, 0.25),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
         },
     )
@@ -140,13 +146,26 @@ def _setup_stair_jump(cfg) -> None:
     cfg.observations.none_stack_critic.stair_event_commands = ObsTerm(
         func=mdp.generated_commands, params={"command_name": "stair_event"}
     )
-    # swap dense coin reward (xy -> 3D) and base-height (plain -> jump-gated)
+    # remove ALL coin guidance (coins pinned the robot to the stair center); climbing is
+    # now driven by stair_climb. Also disable the plain (always-on) base-height term.
     cfg.rewards.track_coin_xy = None
+    cfg.rewards.coin_collected = None
+    cfg.rewards.reach_top = None
+    cfg.rewards.heading_to_coin = None
     cfg.rewards.base_height = None
+    # coin command/obs/curriculum are now inert (no coin reward references them); drop
+    # the coin critic obs and coin curriculum so nothing depends on coins.
+    cfg.observations.none_stack_critic.coin_commands = None
+    if getattr(cfg.curriculum, "coin_levels", None) is not None:
+        cfg.curriculum.coin_levels = None
     # a run-up take-off needs the body to PITCH; the inherited -10 flat-orientation
     # penalty forbids that (flat-jump used only -1). Relax it for the jump task.
     if cfg.rewards.flat_orientation_l2 is not None:
         cfg.rewards.flat_orientation_l2.weight = -2.0
+    # stand firmly on a zero command: give the policy much more standing practice
+    # (with the command-gated coin rewards, standing envs get no forward pull, so the
+    # velocity-tracking reward teaches them to hold still).
+    cfg.commands.base_velocity.rel_standing_envs = 0.2
     # responsive step detection / fresher height map for hopping
     if cfg.scene.height_scanner is not None:
         cfg.scene.height_scanner.update_period = cfg.decimation * cfg.sim.dt

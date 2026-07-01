@@ -95,9 +95,15 @@ class StairDetectEventCommand(CommandTerm):
         bz = hits[:, :, 2]
 
         finite = torch.isfinite(bz) & torch.isfinite(bx) & torch.isfinite(by)
-        valid_mask = getattr(self.sensor.data, "valid_mask", None)
-        if valid_mask is not None:
-            finite = finite & (valid_mask > 0.5)
+        # NOTE: RayCasterFOV keeps the FULL grid in ray_hits_w and only marks the
+        # camera-FOV subset in valid_mask. The near-forward ground strip we measure is
+        # often OUTSIDE the camera FOV, so applying valid_mask zeroes every forward cell
+        # -> step never detected -> no jump ever. Use the full grid by default; only
+        # apply the FOV mask if explicitly requested.
+        if self.cfg.use_fov_mask:
+            valid_mask = getattr(self.sensor.data, "valid_mask", None)
+            if valid_mask is not None:
+                finite = finite & (valid_mask > 0.5)
 
         fwd = finite & (by.abs() < self.cfg.y_halfwidth)
         fwd = fwd & (bx > self.cfg.forward_band[0]) & (bx < self.cfg.forward_band[1])
@@ -200,6 +206,11 @@ class StairDetectEventCommandCfg(CommandTermCfg):
 
     near_sensor_name: str = "base_height_scanner"
     """Downward scanner under the base, used as the under-robot ground reference."""
+
+    use_fov_mask: bool = False
+    """If True, restrict detection to camera-FOV cells (valid_mask). Default False —
+    the near-forward ground strip is usually outside the camera FOV, so masking it
+    would prevent any step from being detected."""
 
     step_threshold: float = 0.03
     """Minimum forward-minus-near terrain height [m] that triggers a hop."""

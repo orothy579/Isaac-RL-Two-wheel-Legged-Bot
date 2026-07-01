@@ -16,10 +16,72 @@ import torch
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import RigidObject
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+class StairClimbProgress(ManagerTermBase):
+    """Exponential reward for climbing to a NEW highest step — anywhere on the stairs.
+
+    Replaces the coin guidance (coins sat at the stair center and constrained motion).
+    The robot may climb out in any direction; each time the terrain *under it* reaches a
+    new highest step it gets ``coef * growth**step`` — i.e. each successive step pays
+    exponentially more. It is non-farmable: only a NEW per-episode max pays (the max is
+    reset each episode), so bobbing or going down-then-up earns nothing extra.
+
+    "which step am I on" = round((ground under the robot − pit floor) / step_height),
+    where the pit floor is tracked as the lowest ground seen this episode (robust to the
+    terrain's origin-z convention). Command-gated so a zero velocity command earns
+    nothing (the robot then holds still).
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.ground_sensor = env.scene.sensors[cfg.params["ground_sensor_cfg"].name]
+        self.max_step = torch.zeros(env.num_envs, device=env.device)
+        self.base_ground = torch.full((env.num_envs,), 1.0e9, device=env.device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = slice(None)
+        self.max_step[env_ids] = 0.0
+        self.base_ground[env_ids] = 1.0e9
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        ground_sensor_cfg: SceneEntityCfg = SceneEntityCfg("base_height_scanner"),
+        step_height: float = 0.05,
+        growth: float = 2.0,
+        coef: float = 1.0,
+        vel_command_name: str = "base_velocity",
+        min_cmd_speed: float = 0.05,
+    ) -> torch.Tensor:
+        hits = self.ground_sensor.data.ray_hits_w[:, :, 2]
+        finite = torch.isfinite(hits)
+        ground_z = (hits * finite).sum(dim=1) / finite.sum(dim=1).clamp(min=1)
+
+        self.base_ground = torch.minimum(self.base_ground, ground_z)
+        cur_step = torch.round((ground_z - self.base_ground) / step_height).clamp(min=0.0)
+
+        new_max = cur_step > self.max_step
+        reward = torch.where(new_max, coef * (growth ** cur_step), torch.zeros_like(cur_step))
+        self.max_step = torch.maximum(self.max_step, cur_step)
+
+        return reward * _cmd_gate(env, vel_command_name, min_cmd_speed)
+
+
+def _cmd_gate(env: ManagerBasedRLEnv, vel_command_name: str, min_cmd_speed: float) -> torch.Tensor:
+    """1.0 where the robot is commanded to move (|cmd xy| > min_cmd_speed), else 0.0.
+
+    Used to gate the coin (progress) rewards by the velocity command, so the robot
+    only chases coins WHEN told to move. With a zero command it gets no coin pull and
+    stands still (the velocity-tracking reward then rewards holding still).
+    """
+    cmd_xy = env.command_manager.get_command(vel_command_name)[:, :2]
+    return (torch.norm(cmd_xy, dim=1) > min_cmd_speed).float()
 
 
 def track_coin_xy_exp(
@@ -27,11 +89,13 @@ def track_coin_xy_exp(
     command_name: str = "coin",
     temperature: float = 1.0,
     scaler: float = 1.0,
+    vel_command_name: str = "base_velocity",
+    min_cmd_speed: float = 0.05,
 ) -> torch.Tensor:
     """Dense reward: exp(-temp * xy-distance) to the active coin (base frame)."""
     des_pos_b = env.command_manager.get_command(command_name)[:, :2]
     distance = torch.norm(des_pos_b / scaler, dim=1)
-    return torch.exp(-temperature * distance)
+    return torch.exp(-temperature * distance) * _cmd_gate(env, vel_command_name, min_cmd_speed)
 
 
 def track_coin_xyz_exp(
@@ -39,33 +103,40 @@ def track_coin_xyz_exp(
     command_name: str = "coin",
     temperature: float = 1.0,
     scaler: float = 1.0,
+    vel_command_name: str = "base_velocity",
+    min_cmd_speed: float = 0.05,
 ) -> torch.Tensor:
     """Dense reward: exp(-temp * 3D-distance) to the active coin (base frame).
 
     Including the height gap (command z) means the robot cannot maximize the reward
     by leaning forward at the base of a step — it must actually climb to reduce z.
+    Gated by the velocity command so it only pulls forward when commanded to move.
     """
     des_pos_b = env.command_manager.get_command(command_name)[:, :3]
     distance = torch.norm(des_pos_b / scaler, dim=1)
-    return torch.exp(-temperature * distance)
+    return torch.exp(-temperature * distance) * _cmd_gate(env, vel_command_name, min_cmd_speed)
 
 
 def coin_collected_bonus(
     env: ManagerBasedRLEnv,
     command_name: str = "coin",
+    vel_command_name: str = "base_velocity",
+    min_cmd_speed: float = 0.05,
 ) -> torch.Tensor:
-    """Sparse one-step pulse (1.0) on every step a coin is collected."""
+    """Sparse one-step pulse (1.0) on every step a coin is collected (only when commanded to move)."""
     term = env.command_manager.get_term(command_name)
-    return term.just_collected
+    return term.just_collected * _cmd_gate(env, vel_command_name, min_cmd_speed)
 
 
 def reach_top_bonus(
     env: ManagerBasedRLEnv,
     command_name: str = "coin",
+    vel_command_name: str = "base_velocity",
+    min_cmd_speed: float = 0.05,
 ) -> torch.Tensor:
-    """Sparse one-step pulse (1.0) when the *top* required coin is collected."""
+    """Sparse one-step pulse (1.0) when the *top* required coin is collected (only when commanded to move)."""
     term = env.command_manager.get_term(command_name)
-    return term.just_reached_top
+    return term.just_reached_top * _cmd_gate(env, vel_command_name, min_cmd_speed)
 
 
 def hop_up_event(
@@ -145,12 +216,15 @@ def heading_to_coin_exp(
     env: ManagerBasedRLEnv,
     command_name: str = "coin",
     temperature: float = 2.0,
+    vel_command_name: str = "base_velocity",
+    min_cmd_speed: float = 0.05,
 ) -> torch.Tensor:
     """Reward facing the active coin: exp(-temp * heading_error^2).
 
     Heading error is the bearing of the (base-frame) coin vector; it is ~0 when the
-    coin is straight ahead.
+    coin is straight ahead. Gated by the velocity command (only steer toward the coin
+    when commanded to move).
     """
     des_pos_b = env.command_manager.get_command(command_name)[:, :2]
     heading = torch.atan2(des_pos_b[:, 1], des_pos_b[:, 0])
-    return torch.exp(-temperature * torch.square(heading))
+    return torch.exp(-temperature * torch.square(heading)) * _cmd_gate(env, vel_command_name, min_cmd_speed)
