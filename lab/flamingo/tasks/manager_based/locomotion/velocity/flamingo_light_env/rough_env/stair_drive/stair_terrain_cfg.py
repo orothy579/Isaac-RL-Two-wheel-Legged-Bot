@@ -2,16 +2,11 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Dedicated stair terrain for the coin task.
+"""Dedicated stair terrain for the stair-climbing task.
 
 Inverted pyramid stairs (robot spawns at the low pit center and climbs outward/up)
-with a **fixed, drivable** step height — difficulty is driven by the coin-count
-curriculum, not by step height, so the geometry stays constant for the analytic
-coin placement in ``mdp.CoinSequenceCommand``.
-
-These params (``tile_size`` = ``size[0]``, sub-terrain ``border_width``,
-``platform_width``, ``step_width``, ``step_height``) MUST match the
-``CoinSequenceCommandCfg`` in the env cfg.
+with a **fixed** step height. ``STEP_HEIGHT`` is imported by the env cfg for
+``StairClimbProgress`` (to convert under-robot terrain height into a step index).
 """
 
 import isaaclab.terrains as terrain_gen
