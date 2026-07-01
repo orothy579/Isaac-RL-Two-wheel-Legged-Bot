@@ -94,7 +94,7 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
     # but use_alignment=False so the take-off may go up-AND-forward (not pure vertical).
     jump_lin_vel_z = RewTerm(
         func=mdp_jump.lin_vel_z_event,
-        weight=2.5,
+        weight=5,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),
@@ -128,7 +128,7 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
     )
     jump_feet_off = RewTerm(
         func=mdp_jump.feet_off_ground_event,
-        weight=1.0,
+        weight=10.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),
