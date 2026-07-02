@@ -49,6 +49,39 @@ def terrain_levels_vel(
     return torch.mean(terrain.terrain_levels.float())
 
 
+def stair_terrain_levels_climb(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    reward_term_name: str = "stair_climb",
+    promote_steps: float = 3.0,
+    demote_steps: float = 1.0,
+) -> torch.Tensor:
+    """Step-height curriculum driven by how many stairs the robot climbed this episode.
+
+    Reuses the per-episode ``max_step`` tracked by the :class:`StairClimbProgress` reward
+    term (steps counted at the env's *own* current step height). An env that reached at
+    least ``promote_steps`` new steps moves up to a taller-step row; one that reached
+    fewer than ``demote_steps`` moves down to a shallower row.
+
+    This runs inside ``_reset_idx`` *before* the reward manager resets, so ``max_step``
+    still holds the finished episode's value. Only usable with a ``generator`` terrain
+    running ``curriculum=True`` (step height interpolated over the rows).
+
+    Returns:
+        The mean terrain level over all envs.
+    """
+    terrain: TerrainImporter = env.scene.terrain
+    # class-based reward terms store their instance on ``term_cfg.func``
+    reward_term = env.reward_manager.get_term_cfg(reward_term_name).func
+    steps = reward_term.max_step[env_ids]
+    # robots that climbed enough progress to taller steps; those that barely climbed drop
+    move_up = steps >= promote_steps
+    move_down = steps < demote_steps
+    move_down *= ~move_up
+    terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
+
+
 def modify_base_velocity_range(
     env: ManagerBasedRLEnv, env_ids: Sequence[int], term_name: str, mod_range: dict, num_steps: int
 ):

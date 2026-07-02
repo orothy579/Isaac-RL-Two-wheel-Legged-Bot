@@ -95,7 +95,7 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
     # legs fold up (wheel clearance) WHILE moving forward -> clears the riser.
     foot_clearance = RewTerm(
         func=mdp_stair.foot_clearance_event,
-        weight=2.0,
+        weight=3.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.1, 0.4),
@@ -115,7 +115,7 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
     )
     jump_feet_off = RewTerm(
         func=mdp_jump.feet_off_ground_event,
-        weight=6.0,
+        weight=9.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),

@@ -42,6 +42,32 @@ class StairClimbProgress(ManagerTermBase):
         self.max_step = torch.zeros(env.num_envs, device=env.device)
         self.base_ground = torch.full((env.num_envs,), 1.0e9, device=env.device)
 
+        # If the stair terrain runs a step-height curriculum, each env's actual step
+        # height depends on its terrain level (row). Cache the (min, max) range and the
+        # row count so ``_step_height`` can recover the per-env step height at runtime;
+        # otherwise fall back to the scalar ``step_height`` param.
+        self._terrain = getattr(env.scene, "terrain", None)
+        self._h_range = None
+        self._num_rows = None
+        gen = getattr(getattr(self._terrain, "cfg", None), "terrain_generator", None)
+        if gen is not None and getattr(gen, "curriculum", False):
+            sub = next(iter(gen.sub_terrains.values()), None)
+            h_range = getattr(sub, "step_height_range", None)
+            if h_range is not None and h_range[0] != h_range[1]:
+                self._h_range = h_range
+                self._num_rows = gen.num_rows
+
+    def _step_height(self, fallback: float) -> torch.Tensor | float:
+        """Per-env step height [m]: recovered from the current terrain level under the
+        step-height curriculum, else the scalar ``fallback``."""
+        if self._h_range is None:
+            return fallback
+        # difficulty ~ (row + 0.5) / num_rows (mean over the per-tile noise); matches the
+        # generator's row -> difficulty -> step_height interpolation.
+        levels = self._terrain.terrain_levels.float()
+        h_min, h_max = self._h_range
+        return h_min + ((levels + 0.5) / self._num_rows) * (h_max - h_min)
+
     def reset(self, env_ids=None):
         if env_ids is None:
             env_ids = slice(None)
@@ -63,7 +89,8 @@ class StairClimbProgress(ManagerTermBase):
         ground_z = (hits * finite).sum(dim=1) / finite.sum(dim=1).clamp(min=1)
 
         self.base_ground = torch.minimum(self.base_ground, ground_z)
-        cur_step = torch.round((ground_z - self.base_ground) / step_height).clamp(min=0.0)
+        sh = self._step_height(step_height)  # per-env height under the curriculum
+        cur_step = torch.round((ground_z - self.base_ground) / sh).clamp(min=0.0)
 
         new_max = cur_step > self.max_step
         reward = torch.where(new_max, coef * (growth ** cur_step), torch.zeros_like(cur_step))

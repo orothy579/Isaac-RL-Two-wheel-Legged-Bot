@@ -200,11 +200,12 @@ class FlamingoRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         
         # terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            # "base_link",
-            # "left_shoulder_link",
-            # "right_shoulder_link",
-            # "left_leg_link",
-            # "right_leg_link",
+            "base_link",
+            "left_shoulder_link",
+            "right_shoulder_link",
+            "left_leg_link",
+            "right_leg_link",
+            ".*caster_link",
         ]
 
 @configclass
@@ -270,9 +271,11 @@ class FlamingoRoughEnvCfg_PLAY(FlamingoRoughEnvCfg):
         
         # terminations
         self.terminations.base_contact.params["sensor_cfg"].body_names = [
-            # "base_link",
-            # "left_shoulder_link",
-            # "right_shoulder_link",
-            # "left_leg_link",
-            # "right_leg_link",
+            "base_link",
+            "left_shoulder_link",
+            "right_shoulder_link",
+            "left_leg_link",
+            "right_leg_link",
+            ".*caster_link",
+
         ]

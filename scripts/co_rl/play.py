@@ -168,7 +168,15 @@ def main():
         elif args_cli.algo == "ppo":
             runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
 
-    runner.load(resume_path)
+    try:
+        runner.load(resume_path)
+    except RuntimeError as err:
+        # The critic obs space changed since this checkpoint was saved (the actor/policy
+        # still matches). Play only runs the actor for inference, so fall back to a
+        # transfer-load: copy the matching actor (+ shape-compatible critic layers) and
+        # re-init the rest. This reproduces the checkpoint's policy exactly.
+        print(f"[PLAY] strict load failed ({err});\n[PLAY] falling back to transfer-load (actor reproduced, critic re-init).")
+        runner.load_transfer(resume_path)
 
     # Initialize GRU model and FC layer
     srm = None

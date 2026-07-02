@@ -15,6 +15,7 @@ a zero command. Deployed policy needs only height_scan + proprio + a velocity co
 Warm-start from the stable stand_drive policy.
 """
 
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -73,10 +74,15 @@ class FlamingoStairRewardsCfg(StandDriveRewardsCfg):
 
 def _setup_stair_task(cfg) -> None:
     """Shared stair-task setup applied after the stand_drive __post_init__."""
-    # fixed-height stair terrain, no terrain-level curriculum
+    # step-height curriculum: all envs start on the shallowest row and are promoted to
+    # taller-step rows once StairClimbProgress reports enough stairs climbed.
     cfg.scene.terrain.terrain_generator = STAIR_TERRAINS_CFG
-    cfg.scene.terrain.terrain_generator.curriculum = False
-    cfg.curriculum.terrain_levels = None
+    cfg.scene.terrain.terrain_generator.curriculum = True
+    cfg.scene.terrain.max_init_terrain_level = 0  # everyone begins at the shallowest step
+    cfg.curriculum.terrain_levels = CurrTerm(
+        func=mdp.stair_terrain_levels_climb,
+        params={"reward_term_name": "stair_climb", "promote_steps": 3.0, "demote_steps": 1.0},
+    )
 
     # keep velocity-command tracking (deployable forward directive); drop the
     # integral-position term (a competing position objective).
