@@ -64,7 +64,7 @@ class FlamingoStairJumpCommandsCfg(CommandsCfg):
         sensor_name="height_scanner",
         resampling_time_range=(1.0e9, 1.0e9),  # state machine, not time-resampled
         step_threshold=0.03,  # hop when a >= 3 cm step is detected ahead
-        forward_band=(0.20, 0.45),
+        forward_band=(0.15, 0.35),
         y_halfwidth=0.2,
         event_during_time=0.5,  # known-good jump window (bfbca92)
         cooldown=0.3,
@@ -86,7 +86,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
     # step_height is recovered per-env from the terrain-level curriculum inside the term.
     stair_climb = RewTerm(
         func=mdp_stair.StairClimbProgress,
-        weight=10.0,
+        weight=15.0,
         params={
             "ground_sensor_cfg": SceneEntityCfg("base_height_scanner"),
             "step_height": STEP_HEIGHT,
@@ -109,7 +109,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
         func=mdp_jump.base_height_when_not_jumping,
         weight=-25.0,
         params={
-            "target_height": 0.33,
+            "target_height": 0.31,
             "event_command_name": "stair_event",
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
             "sensor_cfg": SceneEntityCfg("base_height_scanner"),
@@ -122,7 +122,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
     # but use_alignment=False so the take-off may go up-AND-forward (not pure vertical).
     jump_lin_vel_z = RewTerm(
         func=mdp_jump.lin_vel_z_event,
-        weight=5,
+        weight=7.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),
@@ -136,7 +136,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
     # legs fold up (wheel clearance) WHILE moving forward -> clears the riser.
     foot_clearance = RewTerm(
         func=mdp_stair.foot_clearance_event,
-        weight=3.0,
+        weight=4.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.1, 0.4),
@@ -156,7 +156,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
     )
     jump_feet_off = RewTerm(
         func=mdp_jump.feet_off_ground_event,
-        weight=9.0,
+        weight=10.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),

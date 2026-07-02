@@ -281,6 +281,51 @@ class OnPolicyRunner:
         except AttributeError:
             return {}
 
+    @staticmethod
+    def _jsonify(v):
+        """Best-effort convert a config value to something json.dump can handle."""
+        if isinstance(v, dict):
+            return {str(k): OnPolicyRunner._jsonify(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [OnPolicyRunner._jsonify(x) for x in v]
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            return v
+        return str(v)  # SceneEntityCfg, funcs, markers, etc. -> readable string
+
+    def _term_cfg_to_dict(self, term) -> dict:
+        """A configclass term (reward/command) -> json-safe dict of all its params."""
+        try:
+            d = term.to_dict()  # configclass: recursive, includes params/weight/func
+        except Exception:
+            d = {k: val for k, val in vars(term).items() if not k.startswith("_")}
+        return self._jsonify(d)
+
+    def _get_reward_params(self) -> dict:
+        """Per-term reward params (event_time_range, coefs, sensors, ...) for repro."""
+        try:
+            rewards_cfg = self.env.unwrapped.cfg.rewards
+        except AttributeError:
+            return {}
+        out = {}
+        for name, term in vars(rewards_cfg).items():
+            if name.startswith("_") or term is None:
+                continue
+            out[name] = self._term_cfg_to_dict(term)
+        return out
+
+    def _get_command_params(self) -> dict:
+        """Per-term command params (stair_event thresholds/bands, velocity ranges, ...)."""
+        try:
+            commands_cfg = self.env.unwrapped.cfg.commands
+        except AttributeError:
+            return {}
+        out = {}
+        for name, term in vars(commands_cfg).items():
+            if name.startswith("_") or term is None:
+                continue
+            out[name] = self._term_cfg_to_dict(term)
+        return out
+
     def _get_terrain_params(self) -> dict:
         """Extract terrain configuration from the env config, if present."""
         try:
@@ -320,9 +365,14 @@ class OnPolicyRunner:
         return result
 
     def _save_params(self, log_dir: str):
-        """Write params.json once at training start — reward weights, PPO hyperparams, terrain."""
+        """Write params.json once at training start — checkpoints this run started from,
+        reward weights + per-term params, command params, PPO hyperparams, terrain."""
         params = {
+            "warmstart_ckpt": getattr(self, "warmstart_ckpt", None),
+            "resume_ckpt": getattr(self, "resume_ckpt", None),
             "reward_weights": self._get_reward_weights(),
+            "reward_params": self._get_reward_params(),
+            "command_params": self._get_command_params(),
             "moo": self.cfg.get("moo") or {},
             "algorithm": {k: v for k, v in self.cfg.get("algorithm", {}).items() if not callable(v)},
             "num_steps_per_env": self.cfg.get("num_steps_per_env"),
@@ -389,6 +439,7 @@ class OnPolicyRunner:
             self.writer.save_model(path, self.current_learning_iteration)
 
     def load(self, path, load_optimizer=True):
+        self.resume_ckpt = path  # recorded into params.json for reproducibility
         loaded_dict = torch.load(path)
         self.alg.actor_critic.load_state_dict(loaded_dict["model_state_dict"])
         if self.empirical_normalization:
@@ -413,6 +464,7 @@ class OnPolicyRunner:
         task. Use this for cross-task transfer (e.g. flat-drive -> rough) where
         the policy matches but the critic obs space differs.
         """
+        self.warmstart_ckpt = path  # recorded into params.json for reproducibility
         loaded_dict = torch.load(path, map_location=self.device)
         ckpt_model = loaded_dict["model_state_dict"]
         model_sd = self.alg.actor_critic.state_dict()
