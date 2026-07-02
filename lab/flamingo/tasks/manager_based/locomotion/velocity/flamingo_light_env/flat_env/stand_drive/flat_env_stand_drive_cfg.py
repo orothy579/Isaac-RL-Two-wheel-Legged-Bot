@@ -220,8 +220,8 @@ class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
             "left_shoulder_link",
             "right_shoulder_link",
             ".*_caster_link",
-            # "left_leg_link",
-            # "right_leg_link",
+            "left_leg_link",
+            "right_leg_link",
         ]
 
 @configclass
@@ -292,6 +292,6 @@ class FlamingoFlatEnvCfg_PLAY(FlamingoFlatEnvCfg):
             "left_shoulder_link",
             "right_shoulder_link",
             ".*_caster_link",
-            #"left_leg_link",
-            # "right_leg_link",
+            "left_leg_link",
+            "right_leg_link",
         ]

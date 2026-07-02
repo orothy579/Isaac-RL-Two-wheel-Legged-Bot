@@ -2,44 +2,62 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-"""Flamingo-light stair-climbing — Phase 2 (perception-triggered hop).
+"""Flamingo-light **Phase 2** — climb the stairs (drive up + perception-triggered hop).
 
-Extends the Phase 1 stair-drive task (forward velocity command + ``StairClimbProgress``
-exponential climb reward + ``stand_still``) with a **stair-detection event**: when the
-forward height-scan sees an upward step of >= ``step_threshold`` (default 3 cm), a hop
-window opens and the jump rewards (reused from the flat jump task) reward an up-and-
-forward take-off so the robot hops its wheels onto the step.
+Phase split (kept deliberately clean for debugging):
 
-Deployability: the hop trigger is a deterministic function of the real height
-scanner, so the event flag is a legitimate policy observation — the real robot
-computes the same signal.
+* **Phase 1 = rough ``stand_drive``** — robust locomotion only: hold still on a zero
+  command, drive in the commanded direction (x + yaw), and keep the base height fixed at
+  0.33. No stairs, no climbing. Train flat ``stand_drive`` first, then warm-start into the
+  rough one.
+* **Phase 2 = this task** — warm-start from the rough ``stand_drive`` policy and learn to
+  climb: the stair terrain + step-height curriculum, the ``StairClimbProgress`` climb
+  reward, a position-hold ``stand_still``, and the perception-triggered hop. Everything
+  stair/jump-specific lives HERE (Phase 1 has none of it).
 
-Warm-start from the Phase 1 stair-drive policy::
+Climbing: a forward velocity command drives the robot at the stairs it sees via the
+height-scan; ``StairClimbProgress`` pays exponentially per new highest step reached. When
+the forward scan sees an upward step >= ``step_threshold`` (3 cm) a hop window opens and
+the jump rewards (reused from the flat jump task) reward an up-and-forward take-off so the
+robot hops its wheels onto the step. The step height ramps up over the terrain rows
+(curriculum) as the robot proves it can climb.
+
+Deployability: the hop trigger is a deterministic function of the real height scanner, so
+the event flag is a legitimate policy observation — the real robot computes the same signal.
+
+Warm-start from the Phase 1 rough stand_drive policy::
 
     python scripts/co_rl/train.py --task Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo \\
         --algo ppo --headless \\
-        --warmstart_ckpt logs/co_rl/Flamingo_Light_Rough_Stair/ppo/<run>/<model_*.pt>
+        --warmstart_ckpt logs/co_rl/Flamingo_Light_Rough_Stand_Drive/ppo/<run>/<model_*.pt>
 """
 
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 import lab.flamingo.tasks.manager_based.locomotion.velocity.mdp as mdp
-import lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stair_drive.stair_rewards as mdp_stair
+import lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stair_jump.stair_rewards as mdp_stair
 import lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.flat_env.jump.jump_rewards as mdp_jump
-from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stair_drive.rough_env_stair_drive_cfg import (
-    FlamingoRoughEnvCfg as StairDriveRoughEnvCfg,
-    FlamingoRoughEnvCfg_PLAY as StairDriveRoughEnvCfg_PLAY,
-    FlamingoStairCommandsCfg,
-    FlamingoStairRewardsCfg,
+from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.velocity_env_cfg import (
+    CommandsCfg,
+)
+from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stand_drive.rough_env_stand_drive_cfg import (
+    FlamingoRoughEnvCfg as StandDriveRoughEnvCfg,
+    FlamingoRoughEnvCfg_PLAY as StandDriveRoughEnvCfg_PLAY,
+    FlamingoRewardsCfg as StandDriveRewardsCfg,
+)
+from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stair_jump.stair_terrain_cfg import (
+    STAIR_TERRAINS_CFG,
+    STEP_HEIGHT,
 )
 
 
 @configclass
-class FlamingoStairJumpCommandsCfg(FlamingoStairCommandsCfg):
-    """Phase 1 commands + a perception-triggered hop event."""
+class FlamingoStairJumpCommandsCfg(CommandsCfg):
+    """Base velocity command + a perception-triggered hop event (no flat-jump event)."""
 
     stair_event = mdp.StairDetectEventCommandCfg(
         asset_name="robot",
@@ -55,14 +73,37 @@ class FlamingoStairJumpCommandsCfg(FlamingoStairCommandsCfg):
 
 
 @configclass
-class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
-    """Phase 1 rewards (stair_climb + stand_still, inherited) + hop rewards.
+class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
+    """Phase 1 locomotion rewards (inherited from stand_drive) + the Phase-2 climb & hop.
 
-    The climb driver (``stair_climb``) and ``stand_still`` come from the parent
-    (stair_drive). Here we add the perception-triggered hop rewards, and swap the plain
-    base-height for a jump-gated one (in ``__post_init__``).
+    Everything stair/jump-specific is defined here (not in stand_drive):
+    ``stair_climb`` (exponential climb driver), ``stand_still`` (xy position hold on a zero
+    command), the perception-triggered hop rewards, and a jump-gated base height (swapped
+    in ``_setup_stair_jump``).
     """
 
+    # MAIN CLIMB DRIVER: exponential reward per new highest step reached (any direction).
+    # step_height is recovered per-env from the terrain-level curriculum inside the term.
+    stair_climb = RewTerm(
+        func=mdp_stair.StairClimbProgress,
+        weight=10.0,
+        params={
+            "ground_sensor_cfg": SceneEntityCfg("base_height_scanner"),
+            "step_height": STEP_HEIGHT,
+            "growth": 2.0,  # step1->2, step2->4, step3->8, ... (per new step)
+            "coef": 1.0,
+        },
+    )
+    # Stop on a zero velocity command: penalize xy POSITION drift from where the zero
+    # command began (hold your ground), so it holds wherever it is — even partway up.
+    stand_still = RewTerm(
+        func=mdp_stair.StandStillPosition,
+        weight=-2.0,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
     # base height held only while NOT hopping (so the body can rise during a hop)
     base_height_jump = RewTerm(
         func=mdp_jump.base_height_when_not_jumping,
@@ -125,7 +166,44 @@ class FlamingoStairJumpRewardsCfg(FlamingoStairRewardsCfg):
 
 
 def _setup_stair_jump(cfg) -> None:
-    """Phase-2 additions on top of the Phase 1 stair setup."""
+    """Turn the inherited Phase-1 stand_drive env into the Phase-2 climb+hop env."""
+    # --- stair terrain + step-height curriculum ---
+    # all envs start on the shallowest row and are promoted to taller-step rows once
+    # StairClimbProgress reports enough stairs climbed.
+    cfg.scene.terrain.terrain_generator = STAIR_TERRAINS_CFG
+    cfg.scene.terrain.terrain_generator.curriculum = True
+    cfg.scene.terrain.max_init_terrain_level = 0  # everyone begins at the shallowest step
+    cfg.curriculum.terrain_levels = CurrTerm(
+        func=mdp.stair_terrain_levels_climb,
+        params={"reward_term_name": "stair_climb", "promote_steps": 3.0, "demote_steps": 1.0},
+    )
+
+    # keep velocity-command tracking (deployable forward directive); drop the
+    # integral-position term (a competing position objective).
+    cfg.rewards.error_track_pos_integral = None
+
+    # forward velocity command = the real deployment directive (operator/joystick).
+    # Straight climb (no commanded yaw); Phase 1 already learned x+yaw driving.
+    cfg.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.8)
+    cfg.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+    cfg.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+    cfg.commands.base_velocity.ranges.heading = (0.0, 0.0)
+    cfg.commands.base_velocity.ranges.pos_z = (0.0, 0.0)
+
+    # spawn at the pit center facing +x (so the stairs are straight ahead)
+    cfg.events.reset_base.params = {
+        "pose_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2), "yaw": (-0.1, 0.1)},
+        "velocity_range": {
+            "x": (0.0, 0.0),
+            "y": (0.0, 0.0),
+            "z": (0.0, 0.0),
+            "roll": (-0.0, 0.0),
+            "pitch": (-0.0, 0.0),
+            "yaw": (-0.0, 0.0),
+        },
+    }
+
+    # --- perception-triggered hop additions ---
     # expose the (deployable) hop trigger to policy + critic
     cfg.observations.none_stack_policy.stair_event_commands = ObsTerm(
         func=mdp.generated_commands, params={"command_name": "stair_event"}
@@ -148,7 +226,7 @@ def _setup_stair_jump(cfg) -> None:
 
 
 @configclass
-class FlamingoRoughEnvCfg(StairDriveRoughEnvCfg):
+class FlamingoRoughEnvCfg(StandDriveRoughEnvCfg):
     commands: FlamingoStairJumpCommandsCfg = FlamingoStairJumpCommandsCfg()
     rewards: FlamingoStairJumpRewardsCfg = FlamingoStairJumpRewardsCfg()
 
@@ -158,10 +236,12 @@ class FlamingoRoughEnvCfg(StairDriveRoughEnvCfg):
 
 
 @configclass
-class FlamingoRoughEnvCfg_PLAY(StairDriveRoughEnvCfg_PLAY):
+class FlamingoRoughEnvCfg_PLAY(StandDriveRoughEnvCfg_PLAY):
     commands: FlamingoStairJumpCommandsCfg = FlamingoStairJumpCommandsCfg()
     rewards: FlamingoStairJumpRewardsCfg = FlamingoStairJumpRewardsCfg()
 
     def __post_init__(self):
         super().__post_init__()
         _setup_stair_jump(self)
+        # deterministic pit-center spawn for inspection
+        self.events.reset_base.params["pose_range"] = {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)}

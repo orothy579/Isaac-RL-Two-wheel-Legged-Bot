@@ -86,7 +86,7 @@ class FlamingoRewardsCfg():
         func=mdp.base_height_adaptive_l2,
         weight=-25.0,
         params={
-            "target_height": 0.31,
+            "target_height": 0.33,  # Phase 1 fixed base height (matches flat stand_drive)
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 body_names="base_link",
