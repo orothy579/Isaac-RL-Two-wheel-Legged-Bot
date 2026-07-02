@@ -1091,34 +1091,34 @@ def stand_still_base(
     return velocity_penalty * is_zero_command.float()
 
 
-def stand_still(
-    env: ManagerBasedRLEnv,
-    std: float,
-    command_name: str,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """Reward the robot for standing still when the command is zero, penalizing movement, especially backward movement."""
-    # Extract the used quantities (to enable type-hinting)
-    asset: Articulation = env.scene[asset_cfg.name]
+# def stand_still(
+#     env: ManagerBasedRLEnv,
+#     std: float,
+#     command_name: str,
+#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+# ) -> torch.Tensor:
+#     """Reward the robot for standing still when the command is zero, penalizing movement, especially backward movement."""
+#     # Extract the used quantities (to enable type-hinting)
+#     asset: Articulation = env.scene[asset_cfg.name]
 
-    # Compute the command and check if it's zero
-    command = env.command_manager.get_command(command_name)[:, :3]
-    is_zero_command = torch.all(command == 0.0, dim=1)  # Check per item in batch if command is zero
+#     # Compute the command and check if it's zero
+#     command = env.command_manager.get_command(command_name)[:, :3]
+#     is_zero_command = torch.all(command == 0.0, dim=1)  # Check per item in batch if command is zero
 
-    # Calculate wheel velocity error
-    wheel_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
-    wheel_vel_error = torch.sum(torch.abs(wheel_vel), dim=1)
+#     # Calculate wheel velocity error
+#     wheel_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+#     wheel_vel_error = torch.sum(torch.abs(wheel_vel), dim=1)
 
-    # Penalize backward movement by adding a higher penalty for negative velocities
-    # backward_movement_penalty = torch.sum(torch.clamp(wheel_vel, max=0), dim=1)
+#     # Penalize backward movement by adding a higher penalty for negative velocities
+#     # backward_movement_penalty = torch.sum(torch.clamp(wheel_vel, max=0), dim=1)
 
-    # Calculate the reward
-    reward = wheel_vel_error / std**2
+#     # Calculate the reward
+#     reward = wheel_vel_error / std**2
 
-    # Make sure to only give non-zero reward where command is zero
-    reward = reward * is_zero_command.float()
+#     # Make sure to only give non-zero reward where command is zero
+#     reward = reward * is_zero_command.float()
 
-    return reward
+#     return reward
 
 
 def joint_align_l1(

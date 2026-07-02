@@ -58,16 +58,16 @@ class FlamingoStairRewardsCfg(StandDriveRewardsCfg):
             "coef": 1.0,
         },
     )
-    # Stop on a zero velocity command: penalize wheel spin when the command is zero
-    # (forward command -> inactive). With track_lin_vel_xy_exp -> "no command: stop,
-    # command: go forward".
+    # Stop on a zero velocity command: penalize xy POSITION drift from where the zero
+    # command began (hold your ground), instead of penalizing wheel spin. Anchor is the
+    # spot the robot was at when the command went zero, so it holds there even partway up
+    # the stairs (not pulled back to the pit origin).
     stand_still = RewTerm(
-        func=mdp.stand_still,
-        weight=-0.5,
+        func=mdp_stair.StandStillPosition,
+        weight=-2.0,
         params={
-            "std": 0.5,
             "command_name": "base_velocity",
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_wheel_joint"),
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
 

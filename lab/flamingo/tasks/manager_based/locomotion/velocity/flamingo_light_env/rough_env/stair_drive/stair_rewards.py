@@ -99,6 +99,52 @@ class StairClimbProgress(ManagerTermBase):
         return reward * _cmd_gate(env, vel_command_name, min_cmd_speed)
 
 
+class StandStillPosition(ManagerTermBase):
+    """Penalize **xy position drift** while under a zero velocity command (hold your ground).
+
+    Unlike a wheel-spin or base-velocity penalty (which only fights instantaneous motion)
+    or :func:`stand_origin_base` (which pulls the robot back to its spawn/pit origin — wrong
+    on stairs, it would drag the robot back down), this latches an **anchor** at the xy
+    position where the zero command began and penalizes squared distance from that anchor
+    for as long as the command stays zero. So the robot holds *wherever it currently is* —
+    including partway up the stairs — rather than being pulled to a fixed point.
+
+    The anchor is re-latched on every rising edge of "command became zero" and on reset.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.anchor_xy = torch.zeros(env.num_envs, 2, device=env.device)
+        self.was_standing = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = slice(None)
+        # drop the standing latch so the anchor is re-captured next time the env stands
+        self.was_standing[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str = "base_velocity",
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        asset: RigidObject = env.scene[asset_cfg.name]
+        # standing = the velocity command (lin_vel_x, lin_vel_y, ang_vel_z) is exactly zero,
+        # which is how the command generator marks its standing envs.
+        command = env.command_manager.get_command(command_name)
+        is_standing = torch.all(command[:, :3] == 0.0, dim=1)
+
+        xy = asset.data.root_pos_w[:, :2]
+        # rising edge (just started standing) -> latch the anchor to the current xy
+        newly_standing = is_standing & ~self.was_standing
+        self.anchor_xy[newly_standing] = xy[newly_standing]
+        self.was_standing = is_standing
+
+        drift = torch.sum(torch.square(xy - self.anchor_xy), dim=1)  # squared xy drift [m^2]
+        return drift * is_standing.float()
+
+
 def _cmd_gate(env: ManagerBasedRLEnv, vel_command_name: str, min_cmd_speed: float) -> torch.Tensor:
     """1.0 where the robot is commanded to move (|cmd xy| > min_cmd_speed), else 0.0.
 
