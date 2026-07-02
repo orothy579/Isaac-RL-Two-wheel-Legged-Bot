@@ -131,8 +131,17 @@ class StairDetectEventCommand(CommandTerm):
         step_ahead = self._detect_step_ahead()
         detected = step_ahead > self.cfg.step_threshold
 
-        # rising edge: open a hop window when a step appears and we're idle + off cooldown
-        can_start = (~self.active) & (self.cooldown_timer <= 0.0) & detected
+        # only hop when the robot is actually COMMANDED to move: gate the window start by
+        # the velocity command so a zero command never triggers a hop (the robot then
+        # stands still instead of lurching forward at every step it sees). Deployable —
+        # the operator's forward command is the same signal on the real robot.
+        vel_cmd_xy = self._env.command_manager.get_command(self.cfg.vel_command_name)[:, :2]
+        commanded = torch.norm(vel_cmd_xy, dim=1) > self.cfg.min_cmd_speed
+
+        # rising edge: open a hop window when a step appears, we're commanded to move,
+        # and we're idle + off cooldown. An already-open window is NOT aborted if the
+        # command drops (the in-flight hop completes).
+        can_start = (~self.active) & (self.cooldown_timer <= 0.0) & detected & commanded
         self.active = self.active | can_start
         self.elapsed = torch.where(can_start, torch.zeros_like(self.elapsed), self.elapsed)
 
@@ -211,6 +220,12 @@ class StairDetectEventCommandCfg(CommandTermCfg):
     """If True, restrict detection to camera-FOV cells (valid_mask). Default False —
     the near-forward ground strip is usually outside the camera FOV, so masking it
     would prevent any step from being detected."""
+
+    vel_command_name: str = "base_velocity"
+    """Velocity command term used to gate the hop trigger (only hop when commanded to move)."""
+
+    min_cmd_speed: float = 0.05
+    """Minimum |xy velocity command| [m/s] required to open a hop window (0 command -> no hop)."""
 
     step_threshold: float = 0.03
     """Minimum forward-minus-near terrain height [m] that triggers a hop."""

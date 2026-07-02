@@ -64,7 +64,7 @@ class FlamingoStairJumpCommandsCfg(CommandsCfg):
         sensor_name="height_scanner",
         resampling_time_range=(1.0e9, 1.0e9),  # state machine, not time-resampled
         step_threshold=0.03,  # hop when a >= 3 cm step is detected ahead
-        forward_band=(0.15, 0.45),
+        forward_band=(0.20, 0.45),
         y_halfwidth=0.2,
         event_during_time=0.5,  # known-good jump window (bfbca92)
         cooldown=0.3,
@@ -109,7 +109,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
         func=mdp_jump.base_height_when_not_jumping,
         weight=-25.0,
         params={
-            "target_height": 0.31,
+            "target_height": 0.33,
             "event_command_name": "stair_event",
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
             "sensor_cfg": SceneEntityCfg("base_height_scanner"),
