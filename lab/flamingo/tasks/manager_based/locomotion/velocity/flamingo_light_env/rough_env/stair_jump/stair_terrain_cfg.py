@@ -23,7 +23,7 @@ STEP_HEIGHT_MAX = 0.15
 STEP_HEIGHT = STEP_HEIGHT_MIN  # nominal / fallback (e.g. non-curriculum terrains)
 NUM_LEVELS = 10  # difficulty rows = curriculum levels
 STEP_WIDTH = 0.4
-PLATFORM_WIDTH = 2.5
+PLATFORM_WIDTH = 5
 SUBTERRAIN_BORDER_WIDTH = 1.0
 TILE_SIZE = 10.0
 

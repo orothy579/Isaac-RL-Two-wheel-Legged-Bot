@@ -53,7 +53,7 @@ def stair_terrain_levels_climb(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
     reward_term_name: str = "stair_climb",
-    promote_steps: float = 5.0,
+    promote_steps: float = 4.0,
     demote_steps: float = 1.0,
 ) -> torch.Tensor:
     """Step-height curriculum driven by how many stairs the robot climbed this episode.

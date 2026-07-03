@@ -170,7 +170,7 @@ class CommandsCfg:
 
     base_velocity = mdp.UniformVelocityWithZCommandCfg(
         asset_name="robot",
-        resampling_time_range=(9,13),
+        resampling_time_range=(5,10),
         rel_standing_envs=0.01,
         rel_heading_envs=0.0,
         heading_command=False,
@@ -178,7 +178,7 @@ class CommandsCfg:
         ranges=mdp.UniformVelocityWithZCommandCfg.Ranges(
             lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.0, 0.0), ang_vel_z=(-2.0, 2.0), pos_z=(0.1931942, 0.3531942)
         ),
-        initial_phase_time=2.0,
+        initial_phase_time=0.5,
     )
     integral_position = mdp.IntegralPositionCommandCfg(
             asset_name="robot",

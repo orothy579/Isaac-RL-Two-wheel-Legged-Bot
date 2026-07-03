@@ -64,10 +64,10 @@ class FlamingoStairJumpCommandsCfg(CommandsCfg):
         sensor_name="height_scanner",
         resampling_time_range=(1.0e9, 1.0e9),  # state machine, not time-resampled
         step_threshold=0.03,  # hop when a >= 3 cm step is detected ahead
-        forward_band=(0.15, 0.35),
+        forward_band=(0.25, 0.35),
         y_halfwidth=0.2,
         event_during_time=0.5,  # known-good jump window (bfbca92)
-        cooldown=0.3,
+        cooldown=0.25,
         debug_vis=True,
     )
 
@@ -86,7 +86,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
     # step_height is recovered per-env from the terrain-level curriculum inside the term.
     stair_climb = RewTerm(
         func=mdp_stair.StairClimbProgress,
-        weight=15.0,
+        weight=20.0,
         params={
             "ground_sensor_cfg": SceneEntityCfg("base_height_scanner"),
             "step_height": STEP_HEIGHT,
@@ -184,7 +184,7 @@ def _setup_stair_jump(cfg) -> None:
 
     # forward velocity command = the real deployment directive (operator/joystick).
     # Straight climb (no commanded yaw); Phase 1 already learned x+yaw driving.
-    cfg.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.8)
+    cfg.commands.base_velocity.ranges.lin_vel_x = (0.5, 0.8)
     cfg.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
     cfg.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
     cfg.commands.base_velocity.ranges.heading = (0.0, 0.0)
@@ -219,7 +219,7 @@ def _setup_stair_jump(cfg) -> None:
         cfg.rewards.flat_orientation_l2.weight = -2.0
     # stand firmly on a zero command: more standing practice (stand_still + the
     # command-gated climb reward mean standing envs get no forward pull).
-    cfg.commands.base_velocity.rel_standing_envs = 0.2
+    cfg.commands.base_velocity.rel_standing_envs = 0.05
     # responsive step detection / fresher height map for hopping
     if cfg.scene.height_scanner is not None:
         cfg.scene.height_scanner.update_period = cfg.decimation * cfg.sim.dt
