@@ -175,7 +175,7 @@ def _setup_stair_jump(cfg) -> None:
     cfg.scene.terrain.max_init_terrain_level = 0  # everyone begins at the shallowest step
     cfg.curriculum.terrain_levels = CurrTerm(
         func=mdp.stair_terrain_levels_climb,
-        params={"reward_term_name": "stair_climb", "promote_steps": 3.0, "demote_steps": 1.0},
+        params={"reward_term_name": "stair_climb", "promote_steps": 5.0, "demote_steps": 1.0},
     )
 
     # keep velocity-command tracking (deployable forward directive); drop the

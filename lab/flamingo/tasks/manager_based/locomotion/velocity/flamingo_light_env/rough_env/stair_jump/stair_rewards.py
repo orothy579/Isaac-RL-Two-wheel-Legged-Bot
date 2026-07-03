@@ -22,51 +22,29 @@ if TYPE_CHECKING:
 
 
 class StairClimbProgress(ManagerTermBase):
-    """Exponential reward for climbing to a NEW highest step — anywhere on the stairs.
+    """Exponential reward for reaching a NEW greatest HEIGHT — anywhere on the stairs.
 
-    Replaces the coin guidance (coins sat at the stair center and constrained motion).
-    The robot may climb out in any direction; each time the terrain *under it* reaches a
-    new highest step it gets ``coef * growth**step`` — i.e. each successive step pays
-    exponentially more. It is non-farmable: only a NEW per-episode max pays (the max is
-    reset each episode), so bobbing or going down-then-up earns nothing extra.
+    Progress is the absolute height climbed above the pit floor, measured in FIXED nominal
+    units of ``step_height`` (0.05 m) — deliberately NOT the terrain's current step height.
+    So the exponent counts HEIGHT, not stair count: a tall riser advances it by more (a
+    0.15 m step = +3 units -> ``growth**3``) and a shallow one by less. This gives (a)
+    taller steps are worth much more per step, and (b) the reward keeps GROWING as the
+    step-height curriculum raises the risers, instead of collapsing when a tall step covers
+    the same height in fewer stairs.
 
-    "which step am I on" = round((ground under the robot − pit floor) / step_height),
-    where the pit floor is tracked as the lowest ground seen this episode (robust to the
-    terrain's origin-z convention). Command-gated so a zero velocity command earns
-    nothing (the robot then holds still).
+    Non-farmable: only a NEW per-episode max height pays (the max resets each episode), so
+    bobbing or going down-then-up earns nothing. The pit floor is the lowest ground seen
+    this episode (robust to the terrain's origin-z convention). Command-gated so a zero
+    velocity command earns nothing (the robot then holds still).
     """
 
     def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
         self.ground_sensor = env.scene.sensors[cfg.params["ground_sensor_cfg"].name]
+        # max_step = greatest absolute height reached this episode, in nominal units (see
+        # __call__). Also read by the ``stair_terrain_levels_climb`` curriculum term.
         self.max_step = torch.zeros(env.num_envs, device=env.device)
         self.base_ground = torch.full((env.num_envs,), 1.0e9, device=env.device)
-
-        # If the stair terrain runs a step-height curriculum, each env's actual step
-        # height depends on its terrain level (row). Cache the (min, max) range and the
-        # row count so ``_step_height`` can recover the per-env step height at runtime;
-        # otherwise fall back to the scalar ``step_height`` param.
-        self._terrain = getattr(env.scene, "terrain", None)
-        self._h_range = None
-        self._num_rows = None
-        gen = getattr(getattr(self._terrain, "cfg", None), "terrain_generator", None)
-        if gen is not None and getattr(gen, "curriculum", False):
-            sub = next(iter(gen.sub_terrains.values()), None)
-            h_range = getattr(sub, "step_height_range", None)
-            if h_range is not None and h_range[0] != h_range[1]:
-                self._h_range = h_range
-                self._num_rows = gen.num_rows
-
-    def _step_height(self, fallback: float) -> torch.Tensor | float:
-        """Per-env step height [m]: recovered from the current terrain level under the
-        step-height curriculum, else the scalar ``fallback``."""
-        if self._h_range is None:
-            return fallback
-        # difficulty ~ (row + 0.5) / num_rows (mean over the per-tile noise); matches the
-        # generator's row -> difficulty -> step_height interpolation.
-        levels = self._terrain.terrain_levels.float()
-        h_min, h_max = self._h_range
-        return h_min + ((levels + 0.5) / self._num_rows) * (h_max - h_min)
 
     def reset(self, env_ids=None):
         if env_ids is None:
@@ -89,8 +67,11 @@ class StairClimbProgress(ManagerTermBase):
         ground_z = (hits * finite).sum(dim=1) / finite.sum(dim=1).clamp(min=1)
 
         self.base_ground = torch.minimum(self.base_ground, ground_z)
-        sh = self._step_height(step_height)  # per-env height under the curriculum
-        cur_step = torch.round((ground_z - self.base_ground) / sh).clamp(min=0.0)
+        # progress = ABSOLUTE height climbed in FIXED nominal units (``step_height``=0.05),
+        # NOT the terrain's current step height. A 0.15 m riser => +3 units (growth**3), a
+        # 0.05 m one => +1 (growth**1): taller steps pay much more per step, and the reward
+        # keeps growing as the curriculum raises the risers instead of collapsing.
+        cur_step = torch.round((ground_z - self.base_ground) / step_height).clamp(min=0.0)
 
         new_max = cur_step > self.max_step
         reward = torch.where(new_max, coef * (growth ** cur_step), torch.zeros_like(cur_step))
