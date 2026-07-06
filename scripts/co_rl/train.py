@@ -113,6 +113,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg | Man
     agent_cfg.num_policy_stacks = args_cli.num_policy_stacks if args_cli.num_policy_stacks is not None else agent_cfg.num_policy_stacks
     agent_cfg.num_critic_stacks = args_cli.num_critic_stacks if args_cli.num_critic_stacks is not None else agent_cfg.num_critic_stacks
 
+    # online reward balancer is opt-in: only tasks that define it (e.g. stair_jump) carry the
+    # `adaptive_reward` curriculum term. Disable it unless --adaptive_reward is passed; warn if the
+    # flag is set on a task that has no such term.
+    if hasattr(env_cfg, "curriculum") and getattr(env_cfg.curriculum, "adaptive_reward", None) is not None:
+        if args_cli.adaptive_reward:
+            print("[INFO]: Adaptive reward balancer ENABLED (ROGER-style penalty-gain adaptation).")
+        else:
+            env_cfg.curriculum.adaptive_reward = None
+            print("[INFO]: Adaptive reward balancer DISABLED (pass --adaptive_reward to enable).")
+    elif args_cli.adaptive_reward:
+        print("[WARN]: --adaptive_reward set but this task defines no 'adaptive_reward' curriculum term; ignoring.")
+
     is_off_policy = False if agent_cfg.to_dict()["algorithm"]["class_name"] in ["PPO", "SRMPPO"] else True
 
     # specify directory for logging experiments

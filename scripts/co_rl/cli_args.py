@@ -37,6 +37,15 @@ def add_co_rl_args(parser: argparse.ArgumentParser):
         "weights and matching obs normalizer, then trains fresh. Use for cross-task transfer where obs "
         "dims differ (e.g. flat-drive -> rough). Ignored when --resume is set.",
     )
+    # -- reward autotuning arguments
+    arg_group.add_argument(
+        "--adaptive_reward",
+        action="store_true",
+        default=False,
+        help="Enable the online reward balancer (ROGER-style penalty-gain adaptation) on tasks that "
+        "define it (e.g. stair_jump). Opt-in: OFF by default. Auto-relaxes the curated motion penalties "
+        "while the skill is weak, then restores them toward nominal as the task reward grows.",
+    )
     # -- logger arguments
     arg_group.add_argument(
         "--logger", type=str, default=None, choices={"wandb", "tensorboard", "neptune"}, help="Logger module to use."
