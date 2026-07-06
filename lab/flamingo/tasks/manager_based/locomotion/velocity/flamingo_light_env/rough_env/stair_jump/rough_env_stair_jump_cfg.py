@@ -117,12 +117,11 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
     )
     # -- hop reward: run-1's jump_lin_vel_z, ROLLED BACK but with use_alignment=False
     # (drops the |vz|/|v| factor that penalized forward motion). Keeps the pre-jump
-    # fall/load penalty. hop_up was removed: it was a duplicate of this.
     # hop motor reward: known-good timing (bfbca92: take-off at 0.05-0.25 of the window),
     # but use_alignment=False so the take-off may go up-AND-forward (not pure vertical).
     jump_lin_vel_z = RewTerm(
         func=mdp_jump.lin_vel_z_event,
-        weight=7.0,
+        weight=5.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),
@@ -136,7 +135,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
     # legs fold up (wheel clearance) WHILE moving forward -> clears the riser.
     foot_clearance = RewTerm(
         func=mdp_stair.foot_clearance_event,
-        weight=4.0,
+        weight=2.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.1, 0.4),
@@ -156,7 +155,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
     )
     jump_feet_off = RewTerm(
         func=mdp_jump.feet_off_ground_event,
-        weight=10.0,
+        weight=8.0,
         params={
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),
@@ -176,6 +175,24 @@ def _setup_stair_jump(cfg) -> None:
     cfg.curriculum.terrain_levels = CurrTerm(
         func=mdp.stair_terrain_levels_climb,
         params={"reward_term_name": "stair_climb", "promote_steps": 5.0, "demote_steps": 1.0},
+    )
+
+    # --- online reward balancer: ROGER-style penalty-gain adaptation (curated penalties) ---
+    # Relax the motion penalties that suppress the run-up hop / climb while that skill is still
+    # weak (so the robot dares to attempt it), then tighten them back toward nominal as the task
+    # reward grows. Drives off the per-episode reward trend; logs Curriculum/penalty_gain.
+    cfg.curriculum.adaptive_reward = CurrTerm(
+        func=mdp.AdaptiveRewardBalancer,
+        params={
+            "positive_terms": ["stair_climb", "jump_lin_vel_z", "jump_feet_off", "foot_clearance"],
+            "penalty_terms": ["flat_orientation_l2", "stand_still", "base_height_jump"],
+            "penalty_budget": 0.5,   # target: summed penalty ~= 0.5 x summed task reward
+            "g_min": 0.1,            # never fully disable a penalty
+            "ema": 0.98,             # smoothing of the reward trend across resets
+            "adapt_rate": 0.05,      # max +-5% weight move per update
+            "warmup_batches": 50,    # collect stats before adapting
+            "update_interval": 200,  # move the controller at most every 200 control steps
+        },
     )
 
     # keep velocity-command tracking (deployable forward directive); drop the

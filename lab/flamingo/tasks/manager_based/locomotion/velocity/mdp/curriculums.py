@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import Articulation
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.terrains import TerrainImporter
 
 if TYPE_CHECKING:
@@ -80,6 +80,139 @@ def stair_terrain_levels_climb(
     move_down *= ~move_up
     terrain.update_env_origins(env_ids, move_up, move_down)
     return torch.mean(terrain.terrain_levels.float())
+
+
+class AdaptiveRewardBalancer(ManagerTermBase):
+    """Online reward balancer — keeps the positive/penalty budget in check as the policy learns.
+
+    Runs as a curriculum term (fires in ``_reset_idx`` *before* the reward manager zeroes its
+    episode sums, so it sees each finished episode's totals). It drives two feedback
+    controllers off every managed term's *actual* per-episode contribution — read from
+    ``reward_manager._episode_sums`` and EMA-smoothed across resets, so both react to the
+    reward **trend**, not one noisy episode:
+
+    * **Penalty-gain adaptation (ROGER-style).** One global gain ``g_neg`` in ``[g_min, 1]``
+      multiplies every ``penalty_terms`` weight. It is nudged so the summed penalty magnitude
+      tracks ``penalty_budget`` times the summed positive (task) reward. Early on the new skill
+      earns little, so penalties are automatically *relaxed* (the robot is free to attempt the
+      risky climb/hop instead of freezing); as the task reward grows they are *tightened* back
+      toward nominal (cleaner motion). This automates hand-tuning like ``flat_orientation`` -10 -> -2.
+
+    * **Per-term normalization (opt-in).** For each ``name: target`` in ``normalize_terms`` a
+      per-term multiplier rescales that term's weight so its running |contribution| tracks
+      ``target`` — so no term dominates purely because its raw numbers are large. Empty by
+      default (the exponential ``stair_climb`` is deliberately *not* normalized: its growth is
+      intentional and drives the terrain curriculum).
+
+    The effective weight written back each update is
+    ``base_weight * norm_mult * (g_neg if penalty else 1)`` — one composed write per term.
+    Base weights are captured once (lazily), so this term is the sole owner of them while
+    active. Controller state (``penalty_gain``, ``penalty_over_positive``) is logged under
+    ``Curriculum/``.
+
+    Cadence is decoupled from the reset rate: the EMA updates every call, but the controller
+    only *moves* every ``update_interval`` control steps (so it can't slam to the bounds when
+    resets fire almost every step). Non-invasive: no IsaacLab/runner changes — only reward-term
+    weights are mutated at runtime, which ``RewardManager.compute`` reads live each step.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._initialized = False
+        self._base_w: dict[str, float] = {}          # nominal weight, captured once
+        self._is_penalty: dict[str, bool] = {}       # gets the g_neg multiplier
+        self._norm_mult: dict[str, float] = {}        # per-term normalization multiplier
+        self._ema_mag: dict[str, float] = {}          # EMA of |effective contribution rate|
+        self._g_neg = 1.0
+        self._batches = 0
+        self._last_update_step = -1_000_000_000
+
+    def reset(self, env_ids=None):
+        # controller state is global (not per-env); nothing to reset on episode boundaries.
+        return None
+
+    def _lazy_init(self, env, positive_terms, penalty_terms, normalize_terms):
+        available = set(env.reward_manager.active_terms)
+        for name in list(positive_terms) + list(penalty_terms) + list(normalize_terms.keys()):
+            if name not in available:
+                # e.g. a term disabled to None (flat_orientation_l2) — skip it gracefully.
+                print(f"[AdaptiveRewardBalancer] skipping unknown reward term '{name}'")
+                continue
+            self._base_w[name] = float(env.reward_manager.get_term_cfg(name).weight)
+        for name in penalty_terms:
+            if name in self._base_w and name not in normalize_terms:
+                self._is_penalty[name] = True
+        for name in normalize_terms:
+            if name in self._base_w:
+                self._norm_mult[name] = 1.0
+        self._initialized = True
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        env_ids: Sequence[int],
+        positive_terms=("stair_climb",),
+        penalty_terms=("flat_orientation_l2", "stand_still", "base_height_jump"),
+        normalize_terms: dict | None = None,
+        penalty_budget: float = 0.5,
+        g_min: float = 0.1,
+        ema: float = 0.98,
+        adapt_rate: float = 0.05,
+        norm_mult_range: tuple = (0.25, 4.0),
+        warmup_batches: int = 50,
+        update_interval: int = 200,
+    ):
+        normalize_terms = normalize_terms or {}
+        if not self._initialized:
+            self._lazy_init(env, positive_terms, penalty_terms, normalize_terms)
+
+        rm = env.reward_manager
+        ids = torch.arange(env.num_envs, device=env.device) if isinstance(env_ids, slice) else env_ids
+        if len(ids) == 0:
+            return self._log(positive_terms, penalty_terms)
+
+        # -- per-term |effective contribution rate| over the just-finished envs, EMA-smoothed.
+        inv_T = 1.0 / env.max_episode_length_s
+        for name in self._base_w:
+            mag = abs(float(torch.mean(rm._episode_sums[name][ids])) * inv_T)
+            prev = self._ema_mag.get(name)
+            self._ema_mag[name] = mag if prev is None else ema * prev + (1.0 - ema) * mag
+        self._batches += 1
+
+        # -- move the controllers at most once per ``update_interval`` control steps.
+        due = env.common_step_counter - self._last_update_step >= update_interval
+        if self._batches > warmup_batches and due:
+            self._last_update_step = env.common_step_counter
+            # ROGER penalty gain: pull summed penalty toward penalty_budget * summed positive.
+            P = sum(self._ema_mag.get(n, 0.0) for n in positive_terms)
+            N = sum(self._ema_mag.get(n, 0.0) for n in penalty_terms)
+            if P > 1e-8 and N > 1e-8:
+                ratio = (penalty_budget * P) / N  # >1 -> penalties too small -> raise g_neg
+                step = min(max(ratio, 1.0 - adapt_rate), 1.0 + adapt_rate)
+                self._g_neg = float(min(max(self._g_neg * step, g_min), 1.0))
+            # per-term normalization toward a target magnitude.
+            for name, target in normalize_terms.items():
+                mag = self._ema_mag.get(name, 0.0)
+                if name in self._norm_mult and mag > 1e-8:
+                    step = min(max(target / mag, 1.0 - adapt_rate), 1.0 + adapt_rate)
+                    m = self._norm_mult[name] * step
+                    self._norm_mult[name] = float(min(max(m, norm_mult_range[0]), norm_mult_range[1]))
+
+        # -- apply composed weights: base * norm_mult * (g_neg if penalty).
+        for name, w0 in self._base_w.items():
+            m = self._norm_mult.get(name, 1.0)
+            g = self._g_neg if self._is_penalty.get(name, False) else 1.0
+            rm.get_term_cfg(name).weight = w0 * m * g
+
+        return self._log(positive_terms, penalty_terms)
+
+    def _log(self, positive_terms, penalty_terms):
+        P = sum(self._ema_mag.get(n, 0.0) for n in positive_terms)
+        N = sum(self._ema_mag.get(n, 0.0) for n in penalty_terms)
+        out = {"penalty_gain": self._g_neg, "penalty_over_positive": (N / P) if P > 1e-8 else 0.0}
+        for name, m in self._norm_mult.items():
+            out[f"norm_mult/{name}"] = m
+        return out
 
 
 def modify_base_velocity_range(
