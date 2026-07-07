@@ -130,6 +130,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
             "down_vel_coef": 0.0,
             "temperature": 2.0,
             "use_alignment": False,
+            "forward_gate_ref": 0.3,  # anti-farming: no reward for an in-place vertical bob
         },
     )
     # legs fold up (wheel clearance) WHILE moving forward -> clears the riser.
@@ -160,6 +161,7 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
             "event_command_name": "stair_event",
             "event_time_range": (0.05, 0.25),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
+            "forward_gate_ref": 0.3,  # anti-farming: reward air-phase only when moving forward
         },
     )
 

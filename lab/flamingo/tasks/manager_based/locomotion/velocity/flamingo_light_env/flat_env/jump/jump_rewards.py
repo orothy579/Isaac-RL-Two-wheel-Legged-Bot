@@ -40,6 +40,7 @@ def lin_vel_z_event(
     temperature: float = 2.0,
     use_alignment: bool = True,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    forward_gate_ref: float | None = None,
 ) -> torch.Tensor:
     """Reward an upward (z) take-off velocity during the jump window.
 
@@ -56,6 +57,11 @@ def lin_vel_z_event(
     *pure vertical* jump is preferred. Set False for stair climbing, where the robot
     must move up-AND-forward to land on the next tread (a forward component should NOT
     be penalized).
+
+    ``forward_gate_ref``: if set (m/s), the take-off reward is scaled by
+    ``clamp(forward_speed / forward_gate_ref, 0, 1)`` so an in-place vertical bob earns ~0
+    and only a genuine forward hop pays — an anti-farming gate for the stair task (the fall
+    penalty is NOT gated). Leave None (default) for the flat jump task.
     """
     event_command = env.command_manager.get_command(event_command_name)
     flag = event_command[:, 0]
@@ -92,7 +98,11 @@ def lin_vel_z_event(
 
     reward = up_vel_reward * up_vel_coef * flag * jump_phase * alignment
     reward += down_vel_reward * down_vel_coef * flag * after_jump * alignment
-    reward -= descent_penalty * flag * pre_jump
+    # anti-farming: scale the take-off reward by forward speed (in-place bob -> ~0).
+    if forward_gate_ref is not None:
+        fwd_speed = asset.data.root_lin_vel_b[:, 0]
+        reward = reward * torch.clamp(fwd_speed / forward_gate_ref, 0.0, 1.0)
+    reward -= descent_penalty * flag * pre_jump  # fall penalty is NOT gated
     return reward
 
 
@@ -101,6 +111,8 @@ def feet_off_ground_event(
     event_command_name: str = "event",
     event_time_range: tuple = (0.3, 0.5),
     sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    forward_gate_ref: float | None = None,
 ) -> torch.Tensor:
     """Reward both wheels leaving the ground during the take-off window.
 
@@ -118,7 +130,13 @@ def feet_off_ground_event(
     window = torch.logical_and(
         event_time >= event_time_range[0], event_time <= event_time_range[1]
     ).float()
-    return airborne * flag * window
+    reward = airborne * flag * window
+    # anti-farming: require forward progress (in-place hop -> ~0). See lin_vel_z_event.
+    if forward_gate_ref is not None:
+        asset: RigidObject = env.scene[asset_cfg.name]
+        fwd_speed = asset.data.root_lin_vel_b[:, 0]
+        reward = reward * torch.clamp(fwd_speed / forward_gate_ref, 0.0, 1.0)
+    return reward
 
 
 def push_ground_event(

@@ -96,6 +96,42 @@ def dump_pickle(filename: str, data: object) -> None:
         pickle.dump(data, f)
 
 
+def apply_param_overrides(env_cfg, agent_cfg, spec: str | None) -> None:
+    """Apply ``dotpath -> value`` overrides (JSON string or file) to the built cfgs.
+
+    Runs after the cfgs are constructed (so it wins over ``__post_init__``). Keys must start
+    with ``env.`` (env cfg) or ``agent.`` (agent cfg); intermediate ``params`` dicts are
+    indexed as dicts, everything else via attributes. Fails fast on a bad path so a typo
+    aborts the trial in the first seconds instead of wasting a full training run.
+    """
+    import json
+
+    if not spec:
+        return
+    text = spec
+    if os.path.isfile(spec):
+        with open(spec) as f:
+            text = f.read()
+    overrides = json.loads(text)
+    for key, value in overrides.items():
+        if key.startswith("env."):
+            root, sub = env_cfg, key[len("env.") :]
+        elif key.startswith("agent."):
+            root, sub = agent_cfg, key[len("agent.") :]
+        else:
+            raise ValueError(f"param override '{key}' must start with 'env.' or 'agent.'")
+        parts = sub.split(".")
+        obj = root
+        for p in parts[:-1]:
+            obj = obj[p] if isinstance(obj, dict) else getattr(obj, p)
+        last = parts[-1]
+        if isinstance(obj, dict):
+            obj[last] = value
+        else:
+            setattr(obj, last, value)
+        print(f"[INFO] param override: {key} = {value}")
+
+
 @hydra_task_config(args_cli.task, "co_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg | ManagerBasedConstraintRLEnvCfg, agent_cfg: CoRlPolicyRunnerCfg):
     """Train with CO-RL agent."""
@@ -124,6 +160,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg | Man
             print("[INFO]: Adaptive reward balancer DISABLED (pass --adaptive_reward to enable).")
     elif args_cli.adaptive_reward:
         print("[WARN]: --adaptive_reward set but this task defines no 'adaptive_reward' curriculum term; ignoring.")
+
+    # sweep hook: inject this trial's reward weights / hyperparameters (dotpath -> value).
+    apply_param_overrides(env_cfg, agent_cfg, args_cli.param_overrides)
 
     is_off_policy = False if agent_cfg.to_dict()["algorithm"]["class_name"] in ["PPO", "SRMPPO"] else True
 

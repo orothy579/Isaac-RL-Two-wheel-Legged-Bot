@@ -1,0 +1,52 @@
+# Example sweep config for the Phase-2 stair_jump task.
+# Run:  python scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_jump_example.yaml --dry_run
+# then drop --dry_run to actually launch the trials.
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+# sweep results (results.csv / results_ranked.csv / study.db / trial logs) are saved under
+# logs/co_rl/<experiment_name>/<algo>/_sweeps/<config>_<timestamp>/  — same tree as the trial runs.
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 3000          # iterations PER trial
+
+# method: grid                  # grid = every combination of the grid points below
+# method: random              # random = sample `num_samples` configs in the ranges
+method: optuna              # optuna = TPE-guided search (pip install optuna); resumable SQLite study
+num_samples: 20               # number of trials (random / optuna)
+seed: 42
+
+# extra flags passed verbatim to train.py for every trial.
+# NOTE: set --warmstart_ckpt to your Phase-1 stand_drive checkpoint.
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "4096"
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+  # - "--adaptive_reward"     # uncomment to also enable the online balancer each trial
+
+# objective: read this TensorBoard scalar from each run and rank by it.
+metric:
+  tag_contains: terrain_level # matches Curriculum/terrain_levels
+  reduce: auc                 # last | max | mean | auc | iters_to
+  # threshold: 5.0            # (iters_to only) first iter to reach this level -> use goal: min
+  goal: max                   # auc: higher = climbs higher AND faster
+
+# the parameters to search. Keys are dotpaths into the built cfg:
+#   env.*   -> env cfg   (rewards, curriculum, commands, ...)
+#   agent.* -> agent cfg (algorithm hyperparameters, ...)
+# each param: {values: [...]}  OR  {min, max, step}  (random also supports {min, max, log: true})
+parameters:
+  env.rewards.stair_climb.weight:
+    min: 20.0
+    max: 50.0
+    step: 10.0                # -> 10, 20, 30
+  env.rewards.stair_climb.params.growth:
+    values: [1.5, 2.0, 2.5]
+  env.curriculum.terrain_levels.params.promote_steps:
+    values: [3.0, 5.0]
+  # --- more knobs you can add ---
+  env.rewards.jump_lin_vel_z.weight:      {min: 2.0, max: 8.0, step: 2.0}
+  env.rewards.base_height_jump.weight:    {values: [-15.0, -25.0, -35.0]}
+  agent.algorithm.entropy_coef:           {min: 0.002, max: 0.02, log: true}
+  agent.algorithm.learning_rate:          {values: [3.0e-4, 1.0e-3]}

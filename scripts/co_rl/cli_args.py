@@ -46,6 +46,16 @@ def add_co_rl_args(parser: argparse.ArgumentParser):
         "define it (e.g. stair_jump). Opt-in: OFF by default. Auto-relaxes the curated motion penalties "
         "while the skill is weak, then restores them toward nominal as the task reward grows.",
     )
+    arg_group.add_argument(
+        "--param_overrides",
+        type=str,
+        default=None,
+        help="JSON string, or path to a .json file, of dotpath->value overrides applied AFTER the cfg "
+        "is built (so they win over __post_init__). Keys starting with 'env.' target the env cfg, "
+        "'agent.' the agent cfg, e.g. "
+        "'{\"env.rewards.stair_climb.weight\": 15.0, \"agent.algorithm.entropy_coef\": 0.005}'. "
+        "Used by the sweep driver (scripts/co_rl/sweep.py) to inject each trial's parameters.",
+    )
     # -- logger arguments
     arg_group.add_argument(
         "--logger", type=str, default=None, choices={"wandb", "tensorboard", "neptune"}, help="Logger module to use."
