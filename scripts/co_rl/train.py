@@ -161,6 +161,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg | Man
     elif args_cli.adaptive_reward:
         print("[WARN]: --adaptive_reward set but this task defines no 'adaptive_reward' curriculum term; ignoring.")
 
+    # forward-progress gate (anti-farming): opt-in. Turn on the hop-reward gate when requested
+    # so an in-place vertical bob earns ~0 (only relevant to tasks with the jump hop terms).
+    if args_cli.forward_gate is not None and hasattr(env_cfg, "rewards"):
+        gated = []
+        for term_name in ("jump_lin_vel_z", "jump_feet_off"):
+            term = getattr(env_cfg.rewards, term_name, None)
+            if term is not None:
+                term.params["forward_gate_ref"] = args_cli.forward_gate
+                gated.append(term_name)
+        if gated:
+            print(f"[INFO]: forward-progress gate ENABLED (ref={args_cli.forward_gate} m/s) on {gated}.")
+        else:
+            print("[WARN]: --forward_gate set but no gateable hop terms (jump_lin_vel_z/jump_feet_off) found; ignoring.")
+
     # sweep hook: inject this trial's reward weights / hyperparameters (dotpath -> value).
     apply_param_overrides(env_cfg, agent_cfg, args_cli.param_overrides)
 

@@ -20,7 +20,7 @@ seed: 42
 base_args:
   - "--headless"
   - "--num_envs"
-  - "4096"
+  - "8192"
   - "--warmstart_ckpt"
   - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
   # - "--adaptive_reward"     # uncomment to also enable the online balancer each trial

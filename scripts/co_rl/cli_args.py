@@ -47,6 +47,16 @@ def add_co_rl_args(parser: argparse.ArgumentParser):
         "while the skill is weak, then restores them toward nominal as the task reward grows.",
     )
     arg_group.add_argument(
+        "--forward_gate",
+        type=float,
+        nargs="?",
+        const=0.3,
+        default=None,
+        help="Anti-farming: gate the hop rewards (jump_lin_vel_z, jump_feet_off) on forward speed so an "
+        "in-place vertical bob earns ~0. Opt-in: OFF by default. Pass '--forward_gate' for the default "
+        "0.3 m/s reference, or '--forward_gate 0.2' to set it. Pair with --adaptive_reward.",
+    )
+    arg_group.add_argument(
         "--param_overrides",
         type=str,
         default=None,
