@@ -1,0 +1,42 @@
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 3000
+method: optuna
+num_samples: 20
+seed: 43
+base_args:
+- --headless
+- --num_envs
+- '8192'
+- --warmstart_ckpt
+- /home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt
+metric:
+  tag_contains: terrain_level
+  reduce: auc
+  goal: max
+parameters:
+  env.rewards.stair_climb.weight:
+    values:
+    - 23.490319449545336
+  env.rewards.stair_climb.params.growth:
+    values:
+    - 1.5
+    - 2.0
+    - 2.5
+  env.curriculum.terrain_levels.params.promote_steps:
+    values:
+    - 3.0
+  env.rewards.jump_lin_vel_z.weight:
+    min: 3.679703
+    max: 6.679703
+  env.rewards.base_height_jump.weight:
+    values:
+    - -15.0
+  agent.algorithm.entropy_coef:
+    min: 0.003436
+    max: 0.012436
+    log: true
+  agent.algorithm.learning_rate:
+    values:
+    - 0.001

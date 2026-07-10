@@ -1,0 +1,36 @@
+# Focused sweep — ranges narrowed around the winning trial (#1) of the first sweep:
+#   stair_climb.weight=20, growth=2.5, jump_lin_vel_z=4, base_height=-15, entropy=0.0046, lr=1e-3
+#   (that config reached terrain 0.236 / auc 388; the others stayed ~0).
+# Run detached from a terminal where `python scripts/co_rl/train.py ...` actually works (isaacsim importable):
+#   nohup python scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_jump_focused.yaml > sweep_focused.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 3000          # per trial (raise the FINAL winner to ~5000 later; keep <=10000 for sim2real)
+
+method: optuna                # TPE, guided by the results so far
+num_samples: 15               # total trial budget (narrow space -> fewer needed)
+seed: 7                       # new seed (fresh study)
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+
+metric:
+  tag_contains: terrain_level # Curriculum/terrain_levels
+  reduce: auc                 # climbs high AND early
+  goal: max
+
+# narrowed around winner #1; lr & promote_steps fixed to the winning values to focus the budget.
+parameters:
+  env.rewards.stair_climb.weight:        {min: 18.0, max: 26.0}
+  env.rewards.stair_climb.params.growth: {min: 2.2, max: 2.8}
+  env.rewards.jump_lin_vel_z.weight:     {min: 3.0, max: 6.0}
+  env.rewards.base_height_jump.weight:   {values: [-15.0, -20.0]}
+  agent.algorithm.entropy_coef:          {min: 0.003, max: 0.008, log: true}
+  env.curriculum.terrain_levels.params.promote_steps: {values: [3.0]}   # fixed (winner)
+  agent.algorithm.learning_rate:         {values: [0.001]}              # fixed (winner)

@@ -46,6 +46,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -178,30 +179,111 @@ def extract_metric(log_dir: str, metric: dict) -> float:
     raise ValueError(f"unknown reduce '{reduce}'")
 
 
+def _find_previous_run(cfg: dict, run_name: str) -> str | None:
+    """Find a previous run directory matching *run_name* (e.g. ``sweep012``) that contains
+    at least one ``model_*.pt`` checkpoint.
+
+    Returns the *run-folder basename* (e.g. ``2026-07-08_19-55-35_sweep012``) or ``None``.
+    """
+    exp_name = cfg.get("experiment_name")
+    algo = cfg.get("algo", "ppo")
+    if exp_name:
+        run_root = os.path.join(REPO_ROOT, "logs", "co_rl", exp_name, algo)
+    else:
+        return None
+    if not os.path.isdir(run_root):
+        return None
+    # run folders end with _{run_name}, e.g. 2026-07-08_19-55-35_sweep012
+    candidates = [d for d in os.listdir(run_root)
+                  if d.endswith(f"_{run_name}") and os.path.isdir(os.path.join(run_root, d))]
+    if not candidates:
+        return None
+    # pick the most recent one (lexicographic = chronological for the timestamp prefix)
+    candidates.sort()
+    for cand in reversed(candidates):
+        cand_path = os.path.join(run_root, cand)
+        ckpts = [f for f in os.listdir(cand_path) if f.startswith("model_") and f.endswith(".pt")]
+        if ckpts:
+            return cand
+    return None
+
+
+def _latest_checkpoint(run_dir: str) -> str | None:
+    """Return the filename of the highest-iteration ``model_*.pt`` in *run_dir*."""
+    ckpts = [f for f in os.listdir(run_dir) if f.startswith("model_") and f.endswith(".pt")]
+    if not ckpts:
+        return None
+    # model_2700.pt -> 2700
+    def _iter_num(f):
+        try:
+            return int(f.replace("model_", "").replace(".pt", ""))
+        except ValueError:
+            return -1
+    return max(ckpts, key=_iter_num)
+
+
 def build_cmd(python: str, task: str, algo: str, max_iter: int, run_name: str,
-              override_path: str, base_args: list[str]) -> list[str]:
-    return [
+              override_path: str, base_args: list[str],
+              resume_run: str | None = None, resume_ckpt: str | None = None) -> list[str]:
+    cmd = [
         python, TRAIN_PY,
         "--task", task, "--algo", algo,
         "--max_iterations", str(max_iter),
         "--run_name", run_name,
         "--param_overrides", override_path,
-        *[str(a) for a in base_args],
     ]
+    if resume_run and resume_ckpt:
+        cmd += ["--resume", "True", "--load_run", resume_run, "--checkpoint", resume_ckpt]
+        # remove --warmstart_ckpt from base_args when resuming (resume takes precedence)
+        filtered = []
+        skip_next = False
+        for a in base_args:
+            if skip_next:
+                skip_next = False
+                continue
+            if str(a) == "--warmstart_ckpt":
+                skip_next = True
+                continue
+            filtered.append(str(a))
+        cmd += filtered
+    else:
+        cmd += [str(a) for a in base_args]
+    return cmd
 
 
-def run_trial(idx: int, params: dict, cfg: dict, results_dir: str, python: str) -> dict:
+def run_trial(idx: int, params: dict, cfg: dict, results_dir: str, python: str,
+              resume: bool = False) -> dict:
     run_name = f"sweep{idx:03d}"
     override_path = os.path.join(results_dir, f"{run_name}_overrides.json")
     with open(override_path, "w") as f:
         json.dump(params, f, indent=2)
     logfile = os.path.join(results_dir, f"{run_name}.log")
 
+    # --- checkpoint resume support ---
+    resume_run = None
+    resume_ckpt = None
+    if resume:
+        prev_run = _find_previous_run(cfg, run_name)
+        if prev_run:
+            exp_name = cfg.get("experiment_name")
+            algo = cfg.get("algo", "ppo")
+            prev_dir = os.path.join(REPO_ROOT, "logs", "co_rl", exp_name, algo, prev_run)
+            ckpt = _latest_checkpoint(prev_dir)
+            if ckpt:
+                resume_run = prev_run
+                resume_ckpt = ckpt
+                print(f"[sweep] trial {idx}: RESUMING from {prev_run}/{ckpt}")
+            else:
+                print(f"[sweep] trial {idx}: previous run {prev_run} found but no checkpoints; starting fresh")
+        else:
+            print(f"[sweep] trial {idx}: no previous run found for resume; starting fresh")
+
     cmd = build_cmd(python, cfg["task"], cfg.get("algo", "ppo"), int(cfg["max_iterations"]),
-                    run_name, override_path, cfg.get("base_args", []))
+                    run_name, override_path, cfg.get("base_args", []),
+                    resume_run=resume_run, resume_ckpt=resume_ckpt)
     print(f"[sweep] trial {idx}: {params}")
     print(f"[sweep]   $ {' '.join(cmd)}")
-    with open(logfile, "w") as lf:
+    with open(logfile, "w" if not resume_run else "a") as lf:
         proc = subprocess.run(cmd, cwd=REPO_ROOT, stdout=lf, stderr=subprocess.STDOUT, env=os.environ)
 
     row = {"trial": idx, **params, "status": "ok", "metric": float("nan"), "log_dir": None}
@@ -222,6 +304,22 @@ def run_trial(idx: int, params: dict, cfg: dict, results_dir: str, python: str) 
     return row
 
 
+def _mirror_to_run(row: dict, results_dir: str) -> None:
+    """Copy this trial's sweep files into its run folder's ``sweep/`` subdir, so each run
+    folder is self-contained (its overrides, log, and the running ranking live right next
+    to the trained model)."""
+    log_dir = row.get("log_dir")
+    if not log_dir or not os.path.isdir(log_dir):
+        return
+    dst = os.path.join(log_dir, "sweep")
+    os.makedirs(dst, exist_ok=True)
+    idx = row["trial"]
+    for fn in (f"sweep{idx:03d}_overrides.json", f"sweep{idx:03d}.log", "results.csv", "results_ranked.csv"):
+        src = os.path.join(results_dir, fn)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(dst, fn))
+
+
 # --------------------------------------------------------------------------------------
 # driver
 # --------------------------------------------------------------------------------------
@@ -231,6 +329,9 @@ def main():
     p.add_argument("--dry_run", action="store_true", help="List the trials and exit (no training).")
     p.add_argument("--python", default=sys.executable, help="Python interpreter for train.py subprocesses.")
     p.add_argument("--results_dir", default=None, help="Where to write trial logs/overrides/results.")
+    p.add_argument("--seed_from", default=None,
+                   help="Path to an old study.db whose COMPLETE trials are imported into this (fresh) "
+                        "study, so a broad sweep continues from earlier results instead of from zero.")
     args = p.parse_args()
 
     with open(args.config) as f:
@@ -272,7 +373,7 @@ def main():
     print(f"[sweep] results dir: {results_dir}")
 
     if method == "optuna":
-        _run_optuna(cfg, results_dir, args.python, goal)
+        _run_optuna(cfg, results_dir, args.python, goal, args.seed_from)
         return
     if method not in ("grid", "random"):
         raise ValueError(f"method must be 'grid', 'random', or 'optuna', got '{method}'")
@@ -285,6 +386,11 @@ def main():
         for i, t in enumerate(trials):
             rows.append(run_trial(i, t, cfg, results_dir, args.python))
             _write_results(rows, results_dir, goal)  # checkpoint after every trial
+            _mirror_to_run(rows[-1], results_dir)    # also drop results into the run folder's sweep/
+            if rows[-1]["status"].startswith("train_exit") or rows[-1]["status"] == "no_log_dir":
+                print(f"[sweep] ABORTED at trial {i}: training didn't start (status={rows[-1]['status']}). "
+                      "Check the log, fix the environment, then re-run.")
+                break
     except KeyboardInterrupt:
         print("\n[sweep] interrupted — writing partial results.")
 
@@ -292,11 +398,15 @@ def main():
     print(f"\n[sweep] done. best trial: {best}")
 
 
-def _run_optuna(cfg: dict, results_dir: str, python: str, goal: str) -> None:
+def _run_optuna(cfg: dict, results_dir: str, python: str, goal: str, seed_from: str | None = None) -> None:
     """TPE-sampled Optuna study over the same parameter spec; resumable via a SQLite store.
 
     Reuses ``run_trial`` (subprocess train.py + ``--param_overrides``) and ``extract_metric``.
     A failed run (non-zero exit / missing metric) is reported as pruned so the study continues.
+
+    On resume, FAIL'd trials that have checkpoints on disk are **retried first** (with
+    ``--resume``), so a crashed run picks up from its latest ``model_*.pt`` instead of
+    wasting the training budget.
     """
     import optuna
 
@@ -307,7 +417,18 @@ def _run_optuna(cfg: dict, results_dir: str, python: str, goal: str) -> None:
         row = run_trial(trial.number, params, cfg, results_dir, python)
         rows.append(row)
         _write_results(rows, results_dir, goal)  # checkpoint after every trial
-        if row["status"] != "ok" or not math.isfinite(row["metric"]):
+        _mirror_to_run(row, results_dir)          # also drop results into the run folder's sweep/
+        status = row["status"]
+        if status.startswith("train_exit") or status == "no_log_dir":
+            # training never STARTED (env/command error, e.g. isaacsim not importable). Abort
+            # instead of pruning — otherwise every remaining trial fails the same way in seconds
+            # and silently burns the whole budget.
+            raise RuntimeError(
+                f"trial {trial.number} failed before training started (status={status}). See "
+                f"{os.path.join(results_dir, f'sweep{trial.number:03d}.log')}. Fix the environment, "
+                f"then re-run with --results_dir {results_dir} to resume."
+            )
+        if not math.isfinite(row["metric"]):
             raise optuna.TrialPruned()
         return row["metric"]
 
@@ -318,10 +439,85 @@ def _run_optuna(cfg: dict, results_dir: str, python: str, goal: str) -> None:
         storage=f"sqlite:///{os.path.join(results_dir, 'study.db')}",
         load_if_exists=True,
     )
+
+    if seed_from and len(study.trials) == 0:  # warm-start a fresh study from an old one's results
+        src = f"sqlite:///{os.path.abspath(seed_from)}"
+        old = optuna.load_study(study_name=optuna.study.get_all_study_names(src)[0], storage=src)
+        imported = 0
+        for t in old.trials:
+            if t.state.name == "COMPLETE" and t.value is not None:
+                try:
+                    study.add_trial(t)
+                    imported += 1
+                except Exception as e:  # noqa: BLE001 - distribution mismatch etc.
+                    print(f"[sweep] skip seeding trial #{t.number}: {e}")
+        print(f"[sweep] seeded {imported} completed trial(s) from {seed_from}")
+
+    # ------------------------------------------------------------------
+    # Phase 0: retry FAIL'd trials that have on-disk checkpoints
+    # ------------------------------------------------------------------
+    failed_trials = [t for t in study.trials if t.state.name == "FAIL"]
+    resumable = []
+    for ft in failed_trials:
+        run_name = f"sweep{ft.number:03d}"
+        prev_run = _find_previous_run(cfg, run_name)
+        if prev_run:
+            exp_name = cfg.get("experiment_name")
+            algo = cfg.get("algo", "ppo")
+            prev_dir = os.path.join(REPO_ROOT, "logs", "co_rl", exp_name, algo, prev_run)
+            ckpt = _latest_checkpoint(prev_dir)
+            if ckpt:
+                resumable.append(ft)
+
+    if resumable:
+        print(f"[sweep] found {len(resumable)} FAIL'd trial(s) with checkpoints — retrying with --resume.")
+    for ft in resumable:
+        # reconstruct the params from the Optuna trial
+        params = {k: v for k, v in ft.params.items()}
+        print(f"[sweep] retrying trial {ft.number} from checkpoint...")
+        row = run_trial(ft.number, params, cfg, results_dir, python, resume=True)
+        rows.append(row)
+        _write_results(rows, results_dir, goal)
+        _mirror_to_run(row, results_dir)
+        if row["status"] == "ok" and math.isfinite(row["metric"]):
+            # Directly update the Optuna DB: mark the FAIL'd trial as COMPLETE and record metric.
+            import sqlite3
+            db_path = os.path.join(results_dir, "study.db")
+            conn = sqlite3.connect(db_path)
+            c = conn.cursor()
+            c.execute("UPDATE trials SET state='COMPLETE', datetime_complete=datetime('now') WHERE number=? AND state='FAIL'",
+                      (ft.number,))
+            # insert the trial value
+            c.execute("SELECT trial_id FROM trials WHERE number=?", (ft.number,))
+            trial_id = c.fetchone()[0]
+            c.execute("INSERT OR REPLACE INTO trial_values (trial_id, objective, value, value_type) VALUES (?, 0, ?, 'FINITE')",
+                      (trial_id, row["metric"]))
+            conn.commit()
+            conn.close()
+            print(f"[sweep] trial {ft.number} resumed successfully: metric={row['metric']}")
+            # Reload the study to pick up the DB change
+            study = optuna.load_study(
+                study_name=os.path.basename(results_dir),
+                storage=f"sqlite:///{os.path.join(results_dir, 'study.db')}",
+            )
+        else:
+            print(f"[sweep] trial {ft.number} retry failed: status={row['status']}")
+
+    # ------------------------------------------------------------------
+    # Phase 1: run remaining NEW trials
+    # ------------------------------------------------------------------
+    # num_samples = TOTAL trial budget (not per-invocation): on resume, only run what's left,
+    # counting trials already finished in the store (so a resumed study tops up to num_samples).
+    n_target = int(cfg.get("num_samples", 20))
+    done = len([t for t in study.trials if t.state.name in ("COMPLETE", "PRUNED", "FAIL")])
+    remaining = max(0, n_target - done)
+    print(f"[sweep] optuna: {done} finished trial(s) in store, running {remaining} more (target {n_target}).")
     try:
-        study.optimize(objective, n_trials=int(cfg.get("num_samples", 20)))
+        study.optimize(objective, n_trials=remaining)
     except KeyboardInterrupt:
         print("\n[sweep] interrupted — partial results saved.")
+    except RuntimeError as e:
+        print(f"\n[sweep] ABORTED: {e}")
     if study.best_trial is not None:
         print(f"\n[sweep] optuna best value={study.best_value}")
         print(f"[sweep] optuna best params={study.best_params}")
