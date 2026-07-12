@@ -153,6 +153,19 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
         },
     )
+    # calm touch-down right after each hop: low roll/pitch rate + both wheels back in
+    # contact, inside a short post-hop window. Take-off has three rewards; this is the
+    # one that teaches the LANDING (directly targets bad_orientation terminations).
+    landing_stability = RewTerm(
+        func=mdp_stair.LandingStability,
+        weight=5.0,
+        params={
+            "event_command_name": "stair_event",
+            "landing_window": 0.4,
+            "ang_vel_std": 2.0,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
+        },
+    )
     jump_feet_off = RewTerm(
         func=mdp_jump.feet_off_ground_event,
         weight=8.0,

@@ -6,6 +6,8 @@
 
 * ``StairClimbProgress`` — exponential reward per new highest step reached (climb driver).
 * ``hop_up_event`` / ``foot_clearance_event`` — perception-triggered hop (stair_event).
+* ``LandingStability`` — calm touch-down (low roll/pitch rate + both wheels back in
+  contact) in a short window right after a hop window closes.
 * ``_cmd_gate`` — gate a reward by the velocity command (so a zero command stands still).
 """
 
@@ -124,6 +126,63 @@ class StandStillPosition(ManagerTermBase):
 
         drift = torch.sum(torch.square(xy - self.anchor_xy), dim=1)  # squared xy drift [m^2]
         return drift * is_standing.float()
+
+
+class LandingStability(ManagerTermBase):
+    """Reward a calm, grounded touch-down in a short window right after a hop ends.
+
+    Take-off already has three dedicated rewards; landing had none, so the policy learned
+    to launch but left touch-down to chance (bad_orientation terminations). This term opens
+    a ``landing_window``-second window on the FALLING edge of the hop flag (the command
+    zeroes both channels once the window closes, so the edge is tracked here) and, inside
+    it, pays::
+
+        exp(-|roll/pitch rate|^2 / ang_vel_std^2)  *  (both wheels in contact)
+
+    i.e. attitude must be calm AND wheel contact re-established. Zero outside the landing
+    window and while a new hop window is active. Not farmable in place: it only ever pays
+    for ``landing_window`` seconds per hop, and hops require a detected step + command.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self.was_active = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self.landing_timer = torch.zeros(env.num_envs, device=env.device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = slice(None)
+        self.was_active[env_ids] = False
+        self.landing_timer[env_ids] = 0.0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        event_command_name: str = "stair_event",
+        landing_window: float = 0.4,
+        ang_vel_std: float = 2.0,
+        sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_wheel_link"),
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        active = env.command_manager.get_command(event_command_name)[:, 0] > 0.5
+        # falling edge of the hop flag -> open the landing window
+        closed = self.was_active & ~active
+        self.landing_timer = torch.where(
+            closed, torch.full_like(self.landing_timer, landing_window), self.landing_timer
+        )
+        self.was_active = active
+        in_landing = (self.landing_timer > 0.0) & ~active
+        self.landing_timer = (self.landing_timer - env.step_dt).clamp(min=0.0)
+
+        asset: RigidObject = env.scene[asset_cfg.name]
+        ang_rp = asset.data.root_ang_vel_b[:, :2]  # roll & pitch rates [rad/s]
+        calm = torch.exp(-torch.sum(torch.square(ang_rp), dim=1) / ang_vel_std**2)
+
+        contact_sensor = env.scene.sensors[sensor_cfg.name]
+        contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+        both_contact = (contact_time > 0.0).all(dim=1).float()
+
+        return calm * both_contact * in_landing.float()
 
 
 def _cmd_gate(env: ManagerBasedRLEnv, vel_command_name: str, min_cmd_speed: float) -> torch.Tensor:

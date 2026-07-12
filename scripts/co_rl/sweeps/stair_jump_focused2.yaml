@@ -1,0 +1,43 @@
+# Focused sweep round-3 — ranges narrowed from the CONSENSUS of two studies:
+#   A = stair_jump_focused_2026-07-07_23-22-53      (12 trials, best #11 auc=1334)
+#   B = stair_jump_focused_auto_2026-07-08_22-32-10 (20 trials, best #14 auc=1286)
+# Consensus across A+B (32 trials):
+#   climb_w ~23.5 (unimportant within 18-26 -> FIX), bh_w=-15 beats -20 (-> FIX),
+#   growth best 2.4-2.5, jlvz best 4.3-5.6, entropy best 0.0055-0.009 (>0.010 mostly bad).
+# NOTE: fresh study (auc at 5000 iters is NOT comparable to the 3000-iter studies — do not seed_from).
+# With 10 trials TPE is mostly in its random-startup phase; the narrow ranges do the real work.
+#
+# Run (from a terminal where `python -c "import isaacsim"` works):
+#   nohup python scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_jump_focused2.yaml > sweep_focused2.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 5000          # per trial (user: keep <=10000 for sim2real)
+
+method: optuna
+num_samples: 10               # total budget: 10 trials x 5000 iters (~2.8h each)
+seed: 21
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+
+metric:
+  tag_contains: terrain_level
+  reduce: auc                 # NOTE: scales with max_iterations — only compare within this study
+  goal: max
+
+parameters:
+  # consensus-fixed (searching them added nothing in A/B):
+  env.rewards.stair_climb.weight:                     {values: [23.5]}
+  env.rewards.base_height_jump.weight:                {values: [-15.0]}
+  env.curriculum.terrain_levels.params.promote_steps: {values: [3.0]}
+  agent.algorithm.learning_rate:                      {values: [0.001]}
+  # searched (tight consensus windows):
+  env.rewards.stair_climb.params.growth:              {min: 2.35, max: 2.65}
+  env.rewards.jump_lin_vel_z.weight:                  {min: 4.3, max: 5.6}
+  agent.algorithm.entropy_coef:                       {min: 0.0055, max: 0.009, log: true}
