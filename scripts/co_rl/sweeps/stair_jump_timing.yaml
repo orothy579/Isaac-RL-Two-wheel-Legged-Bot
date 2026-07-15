@@ -1,0 +1,54 @@
+# Jump-TIMING sweep. Problem observed in play: hop height is fine, but the hop TIMING/trigger
+# fires even when the step is off to the SIDE / approached diagonally, so one wheel lands on the
+# tread and the other misses. We hold the reward weights at config #3 and search only the
+# StairDetectEventCommand geometry that decides WHEN a hop fires:
+#   - y_halfwidth      : |y| half-width [m] of the forward detection strip. NARROWER => only fire
+#                        when the step is squarely centered ahead (not off to the side). Key lever.
+#   - step_threshold   : min forward-minus-near height [m] to trigger. HIGHER => only decisive steps.
+#   - forward_band_far : how far ahead we look (near edge fixed at 0.25). Sets the lead time.
+#   - event_during_time: hop window length [s] (take-off timing budget).
+# NOTE: metric is final_mean (mean of last 20% of terrain_levels) — rewards runs that REACH & HOLD
+#       high terrain, matching "highest terrain level is what matters" (auc did not).
+#
+# Run (isaacsim-working terminal, detached):
+#   nohup python scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_jump_timing.yaml > sweep_timing.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 5000
+
+method: optuna
+num_samples: 12
+seed: 44
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--adaptive_reward"       # validated as beneficial (2026-07-15 multiseed band: auc t~3.3, final_mean higher+tighter)
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+
+metric:
+  tag_contains: terrain_level
+  reduce: final_mean          # mean of last tail_frac of the curve (robust final level)
+  tail_frac: 0.2
+  goal: max
+
+parameters:
+  # ---- reward weights FIXED to config #3 (isolate the timing effect) ----
+  env.rewards.stair_climb.weight:                     {values: [23.5]}
+  env.rewards.stair_climb.params.growth:              {values: [2.5251]}
+  env.rewards.jump_lin_vel_z.weight:                  {values: [4.3904]}
+  env.rewards.base_height_jump.weight:                {values: [-15.0]}
+  env.curriculum.terrain_levels.params.promote_steps: {values: [3.0]}
+  agent.algorithm.entropy_coef:                       {values: [0.008431]}
+  agent.algorithm.learning_rate:                      {values: [0.001]}
+  # ---- adaptive balancer knobs FIXED to the best of the adaptive sweep (trial #4) ----
+  env.curriculum.adaptive_reward.params.penalty_budget: {values: [0.572]}
+  env.curriculum.adaptive_reward.params.g_min:          {values: [0.595]}
+  # ---- SEARCHED: hop trigger geometry / timing ----
+  env.commands.stair_event.y_halfwidth:       {min: 0.08, max: 0.20}   # narrower => must be aligned
+  env.commands.stair_event.step_threshold:    {min: 0.025, max: 0.05}
+  env.commands.stair_event.event_during_time: {min: 0.40, max: 0.60}

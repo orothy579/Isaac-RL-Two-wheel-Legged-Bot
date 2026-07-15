@@ -1,0 +1,9 @@
+{
+  "env.rewards.stair_climb.weight": 23.5,
+  "env.rewards.stair_climb.params.growth": 2.525,
+  "env.rewards.jump_lin_vel_z.weight": 4.39,
+  "env.rewards.base_height_jump.weight": -15.0,
+  "env.curriculum.terrain_levels.params.promote_steps": 3.0,
+  "agent.algorithm.entropy_coef": 0.00843,
+  "agent.algorithm.learning_rate": 0.001
+}

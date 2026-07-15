@@ -1,0 +1,48 @@
+# Bi-level sweep (research_advice.md Approach A): Outer = Optuna TPE over the ONLINE
+# balancer's own knobs; Inner = AdaptiveRewardBalancer adapting penalty gains during training.
+# All reward weights are FIXED to the focused2 winner (sweep003, auc=2521 @5000it):
+#   growth 2.525, jlvz 4.39, climb_w 23.5, bh -15, promote 3, entropy 0.00843, lr 1e-3.
+# So this study answers ONE question: does in-loop penalty-gain adaptation beat the fixed
+# best config (auc 2521), and at which (penalty_budget, g_min)?
+#
+# Safety vs the 07-06 farming collapse: g_min is swept in [0.4, 0.8] (penalties are only
+# *slightly* relaxed, never gutted to 0.1), landing_stability now stabilizes training, and
+# the auc objective ranks any farming run near 0 so TPE steers away from it.
+#
+# Run (isaacsim-working terminal):
+#   nohup python scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_jump_adaptive.yaml > sweep_adaptive.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 5000          # same budget as focused2 -> auc directly comparable to 2521
+
+method: optuna
+num_samples: 8
+seed: 33
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "16384"
+  - "--adaptive_reward"       # keep the AdaptiveRewardBalancer curriculum term alive
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+
+metric:
+  tag_contains: terrain_level
+  reduce: auc
+  goal: max
+
+parameters:
+  # ---- reward weights: FIXED to the focused2 winner (not searched) ----
+  env.rewards.stair_climb.weight:                     {values: [23.5]}
+  env.rewards.stair_climb.params.growth:              {values: [2.525]}
+  env.rewards.jump_lin_vel_z.weight:                  {values: [4.39]}
+  env.rewards.base_height_jump.weight:                {values: [-15.0]}
+  env.curriculum.terrain_levels.params.promote_steps: {values: [3.0]}
+  agent.algorithm.entropy_coef:                       {values: [0.00843]}
+  agent.algorithm.learning_rate:                      {values: [0.001]}
+  # ---- searched: the balancer's own knobs ----
+  env.curriculum.adaptive_reward.params.penalty_budget: {min: 0.3, max: 0.7}
+  env.curriculum.adaptive_reward.params.g_min:          {min: 0.4, max: 0.8}

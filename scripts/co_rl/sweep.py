@@ -165,6 +165,12 @@ def extract_metric(log_dir: str, metric: dict) -> float:
         return float(max(vals))
     if reduce == "mean":
         return float(sum(vals) / len(vals))
+    if reduce == "final_mean":  # mean of the last tail_frac of the curve = final achieved level,
+        # robust to single-episode spikes. Prefers runs that REACH & HOLD high terrain (unlike
+        # auc, which over-rewards reaching it early). Use this when peak/final level is the goal.
+        tail = float(metric.get("tail_frac", 0.2))
+        k = max(1, int(round(len(vals) * tail)))
+        return float(sum(vals[-k:]) / k)
     if reduce == "auc":  # area under the curve: rewards reaching high AND early
         import numpy as np
 

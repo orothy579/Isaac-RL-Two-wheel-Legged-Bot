@@ -1,0 +1,44 @@
+# Multi-seed reproducibility check for the focused2 winner config #3.
+# WHY: we already have TWO seed-42 runs of this exact config that DISAGREE
+# (sweep003 terrain max 1.047  vs  best_long terrain max 0.947) purely from GPU
+# nondeterminism (cudnn.deterministic=False). This grid runs 3 fresh seeds so we
+# can report mean +/- std and decide whether best_long's weaker result was just an
+# unlucky draw (it almost certainly is) rather than a config problem.
+#
+# grid over agent.seed only; every reward weight is FIXED to config #3.
+# To validate config #8 instead, copy this file and change the 3 lines marked (#8):
+#   growth 2.6239 , jump_lin_vel_z 5.289 , entropy_coef 0.007094
+#
+# Run (isaacsim-working terminal, detached):
+#   nohup python scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/multiseed_config3.yaml > multiseed3.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 5000          # match sweep003 for comparability
+
+method: grid                  # exactly these seeds, no TPE
+num_samples: 0                # unused for grid
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"                    # match sweep003 / best_long
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+
+metric:
+  tag_contains: terrain_level
+  reduce: auc                 # (final/max terrain re-extractable per run afterward)
+  goal: max
+
+parameters:
+  agent.seed: {values: [7, 123, 2024]}          # the 3 fresh seeds
+  # ---- config #3 (FIXED) ----
+  env.rewards.stair_climb.weight:                     {values: [23.5]}
+  env.rewards.stair_climb.params.growth:              {values: [2.5251]}   # (#8: 2.6239)
+  env.rewards.jump_lin_vel_z.weight:                  {values: [4.3904]}   # (#8: 5.2890)
+  env.rewards.base_height_jump.weight:                {values: [-15.0]}
+  env.curriculum.terrain_levels.params.promote_steps: {values: [3.0]}
+  agent.algorithm.entropy_coef:                       {values: [0.008431]} # (#8: 0.007094)
+  agent.algorithm.learning_rate:                      {values: [0.001]}
