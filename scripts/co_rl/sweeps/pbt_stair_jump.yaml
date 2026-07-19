@@ -1,0 +1,58 @@
+# PBT + adaptive_reward (bi-level, Phase 2). Population of 4 evolves the key reward /
+# balancer knobs across 5 generations x 1500 iters (total 30k iters ~ 17h sequential).
+# Center = focused2 config #3 + adaptive #4 knobs + the timing-sweep winner's trigger
+# geometry (trial #3: y_halfwidth 0.1652, step_threshold 0.049, during 0.4913 -> final_mean 1.057).
+#
+# Run via the chain script (waits for the running job, resumes the timing sweep, then this):
+#   nohup bash scripts/run_timing_then_pbt.sh > chain.out 2>&1 &
+# Or directly (conda env_isaaclab activated!):
+#   nohup python scripts/co_rl/pbt.py --config scripts/co_rl/sweeps/pbt_stair_jump.yaml > pbt.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+
+population: 4
+generations: 5
+iters_per_gen: 1500
+exploit_frac: 0.25            # bottom 1 of 4 copies a top-1 member each generation
+perturb_factor: 1.2           # explore: x1.2 or /1.2 per evolved param
+seed: 3
+
+init_ckpt: "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--adaptive_reward"
+
+metric:
+  tag_contains: terrain_level
+  reduce: final_mean
+  tail_frac: 0.3              # last 30% of each 1500-iter generation window
+  goal: max
+
+# starting point of every member (member 0 = exactly this; others = perturbed copies).
+center_params:
+  env.rewards.stair_climb.weight:                       23.5
+  env.rewards.stair_climb.params.growth:                2.5251
+  env.rewards.jump_lin_vel_z.weight:                    4.3904
+  env.rewards.base_height_jump.weight:                  -15.0
+  env.curriculum.terrain_levels.params.promote_steps:   3.0
+  agent.algorithm.entropy_coef:                         0.008431
+  agent.algorithm.learning_rate:                        0.001
+  env.curriculum.adaptive_reward.params.penalty_budget: 0.572
+  env.curriculum.adaptive_reward.params.g_min:          0.595
+  # timing winner (fixed, not evolved):
+  env.commands.stair_event.y_halfwidth:                 0.1652
+  env.commands.stair_event.step_threshold:              0.0490
+  env.commands.stair_event.event_during_time:           0.4913
+
+# which params evolve (exploit/explore perturbs these only), with clip bounds:
+evolve:
+  env.rewards.stair_climb.params.growth:                {min: 2.2, max: 3.0}
+  env.rewards.jump_lin_vel_z.weight:                    {min: 3.0, max: 7.0}
+  agent.algorithm.entropy_coef:                         {min: 0.004, max: 0.012}
+  env.curriculum.adaptive_reward.params.penalty_budget: {min: 0.3, max: 0.75}
+  env.curriculum.adaptive_reward.params.g_min:          {min: 0.4, max: 0.85}

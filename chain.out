@@ -1,0 +1,5 @@
+[chain] env OK (/home/lch/miniconda3/envs/env_isaaclab/bin/python)
+[chain] 2026-07-17 22:43:01 resuming timing sweep -> logs/co_rl/Flamingo_Light_Rough_Stair_Jump/ppo/_sweeps/stair_jump_timing_2026-07-15_10-43-58
+[chain] 2026-07-18 10:01:44 timing sweep finished (exit 0)
+[chain] 2026-07-18 10:01:44 launching PBT
+[chain] 2026-07-18 13:27:32 PBT finished (exit 0)

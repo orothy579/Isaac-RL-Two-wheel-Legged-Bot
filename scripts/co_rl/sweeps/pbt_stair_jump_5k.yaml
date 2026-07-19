@@ -1,0 +1,59 @@
+# PBT round 2 — 5000-iter generations (round 1's 1500 was too short: 3 of 4 members were
+# still pre-takeoff at ~0.03 while m2 hit 0.457, so members couldn't differentiate).
+# Changes vs pbt_stair_jump.yaml:
+#   * iters_per_gen 1500 -> 5000 (full takeoff within each generation)
+#   * generations 5 -> 2 (a surviving lineage accumulates <= 10k iters — the user's
+#     sim2real cap on jump training)
+#   * center = round-1 gen0 WINNER m2 (growth won CLIPPED at 3.0 -> bound extended to 3.4)
+# Total budget: 4 members x 2 gens x 5000 = 40k iters (~22h sequential).
+#
+# Run (survives terminal close, needs conda env):
+#   nohup bash -c 'source /home/lch/miniconda3/etc/profile.d/conda.sh && conda activate env_isaaclab && python scripts/co_rl/pbt.py --config scripts/co_rl/sweeps/pbt_stair_jump_5k.yaml' > pbt5k.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+
+population: 4
+generations: 2
+iters_per_gen: 5000
+exploit_frac: 0.25
+perturb_factor: 1.2
+seed: 5
+
+init_ckpt: "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--adaptive_reward"
+
+metric:
+  tag_contains: terrain_level
+  reduce: final_mean
+  tail_frac: 0.2              # same protocol as the 5000-iter sweeps -> comparable to 1.057
+  goal: max
+
+# center = round-1 gen0 winner (m2): growth 3.0(clipped), jlvz 5.268, entropy 0.00703,
+# penalty_budget 0.686, g_min 0.714. Timing trigger stays the timing-sweep winner (fixed).
+center_params:
+  env.rewards.stair_climb.weight:                       23.5
+  env.rewards.stair_climb.params.growth:                3.0
+  env.rewards.jump_lin_vel_z.weight:                    5.2685
+  env.rewards.base_height_jump.weight:                  -15.0
+  env.curriculum.terrain_levels.params.promote_steps:   3.0
+  agent.algorithm.entropy_coef:                         0.007026
+  agent.algorithm.learning_rate:                        0.001
+  env.curriculum.adaptive_reward.params.penalty_budget: 0.686
+  env.curriculum.adaptive_reward.params.g_min:          0.714
+  env.commands.stair_event.y_halfwidth:                 0.1652
+  env.commands.stair_event.step_threshold:              0.0490
+  env.commands.stair_event.event_during_time:           0.4913
+
+evolve:
+  env.rewards.stair_climb.params.growth:                {min: 2.4, max: 3.4}   # was clipped at 3.0 and WON
+  env.rewards.jump_lin_vel_z.weight:                    {min: 3.5, max: 7.0}
+  agent.algorithm.entropy_coef:                         {min: 0.004, max: 0.012}
+  env.curriculum.adaptive_reward.params.penalty_budget: {min: 0.35, max: 0.8}
+  env.curriculum.adaptive_reward.params.g_min:          {min: 0.45, max: 0.85}
