@@ -82,6 +82,24 @@ def stair_terrain_levels_climb(
     return torch.mean(terrain.terrain_levels.float())
 
 
+def stair_climb_units(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    reward_term_name: str = "stair_climb",
+) -> torch.Tensor:
+    """Log-only curriculum term: mean height climbed per finished episode, in the nominal
+    5 cm units tracked by :class:`StairClimbProgress` (``max_step``).
+
+    Unlike ``Curriculum/terrain_levels`` (which conflates climbing with promotion policy and
+    is meaningless on fixed-height terrain), this directly answers "how much did the robots
+    actually climb": e.g. on a fixed 0.15 m probe terrain, 3.0 = every resetting env got onto
+    the first tread, 0.0 = nobody ever did. Reads the finished episode's ``max_step`` (this
+    runs in ``_reset_idx`` before the reward manager resets it) and changes nothing.
+    """
+    reward_term = env.reward_manager.get_term_cfg(reward_term_name).func
+    return torch.mean(reward_term.max_step[env_ids])
+
+
 class AdaptiveRewardBalancer(ManagerTermBase):
     """Online reward balancer — keeps the positive/penalty budget in check as the policy learns.
 

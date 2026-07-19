@@ -189,6 +189,11 @@ def _setup_stair_jump(cfg) -> None:
         func=mdp.stair_terrain_levels_climb,
         params={"reward_term_name": "stair_climb", "promote_steps": 5.0, "demote_steps": 1.0},
     )
+    # log-only: mean height climbed per episode in nominal 5 cm units (Curriculum/climb_units).
+    # Meaningful even when terrain_levels is disabled (e.g. fixed-height capability probes).
+    cfg.curriculum.climb_units = CurrTerm(
+        func=mdp.stair_climb_units, params={"reward_term_name": "stair_climb"}
+    )
 
     # --- online reward balancer: ROGER-style penalty-gain adaptation (curated penalties) ---
     # Relax the motion penalties that suppress the run-up hop / climb while that skill is still
