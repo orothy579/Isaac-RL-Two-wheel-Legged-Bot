@@ -45,6 +45,8 @@ class OnPolicyRunner:
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
+        self.action_clip = self.cfg.get("action_clip")
+        self.reward_clip = self.cfg.get("reward_clip")
         if self.empirical_normalization:
             self.obs_normalizer = EmpiricalNormalization(shape=[num_obs], until=1.0e8).to(self.device)
             self.critic_obs_normalizer = EmpiricalNormalization(shape=[num_critic_obs], until=1.0e8).to(self.device)
@@ -117,11 +119,22 @@ class OnPolicyRunner:
         tot_iter = start_iter + num_learning_iterations
         for it in range(start_iter, tot_iter):
             start = time.time()
+            action_clip_count = 0
+            action_count = 0
+            reward_clip_count = 0
+            reward_count = 0
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     actions = self.alg.act(obs, critic_obs)
-                    obs, rewards, dones, infos = self.env.step(actions.to(self.env.device))
+                    env_actions = actions
+                    if self.action_clip is not None:
+                        action_clip_count += torch.count_nonzero(torch.abs(actions) > self.action_clip).item()
+                        action_count += actions.numel()
+                        env_actions = torch.nan_to_num(
+                            actions, nan=0.0, posinf=self.action_clip, neginf=-self.action_clip
+                        ).clamp(-self.action_clip, self.action_clip)
+                    obs, rewards, dones, infos = self.env.step(env_actions.to(self.env.device))
                     # move to the right device
                     obs, critic_obs, rewards, dones = (
                         obs.to(self.device),
@@ -129,6 +142,14 @@ class OnPolicyRunner:
                         rewards.to(self.device),
                         dones.to(self.device),
                     )
+                    if self.reward_clip is not None:
+                        reward_clip_count += torch.count_nonzero(
+                            ~torch.isfinite(rewards) | (torch.abs(rewards) > self.reward_clip)
+                        ).item()
+                        reward_count += rewards.numel()
+                        rewards = torch.nan_to_num(
+                            rewards, nan=-self.reward_clip, posinf=self.reward_clip, neginf=-self.reward_clip
+                        ).clamp(-self.reward_clip, self.reward_clip)
                     # perform normalization
                     obs = self.obs_normalizer(obs)
                     if "critic" in infos["observations"]:
@@ -222,9 +243,18 @@ class OnPolicyRunner:
         self.writer.add_scalar("Loss/surrogate", locs["mean_surrogate_loss"], locs["it"])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
+        if locs["action_count"] > 0:
+            self.writer.add_scalar(
+                "Policy/action_clip_fraction", locs["action_clip_count"] / locs["action_count"], locs["it"]
+            )
+        if locs["reward_count"] > 0:
+            self.writer.add_scalar(
+                "Train/reward_clip_fraction", locs["reward_clip_count"] / locs["reward_count"], locs["it"]
+            )
         self.writer.add_scalar("Perf/total_fps", fps, locs["it"])
         self.writer.add_scalar("Perf/collection time", locs["collection_time"], locs["it"])
         self.writer.add_scalar("Perf/learning_time", locs["learn_time"], locs["it"])
+        self._log_terrain_level_histogram(locs["it"])
         if len(locs["rewbuffer"]) > 0:
             self.writer.add_scalar("Train/mean_reward", statistics.mean(locs["rewbuffer"]), locs["it"])
             self.writer.add_scalar("Train/mean_episode_length", statistics.mean(locs["lenbuffer"]), locs["it"])
@@ -325,6 +355,26 @@ class OnPolicyRunner:
                 continue
             out[name] = self._term_cfg_to_dict(term)
         return out
+
+    def _log_terrain_level_histogram(self, it: int) -> None:
+        """Log the per-env terrain-curriculum level distribution (not just its mean).
+
+        The curriculum pipeline only ever reaches the writer as a scalar mean
+        (`isaaclab.managers.CurriculumManager.reset` calls `.item()` on every term's
+        state before handing it to the runner as ``Curriculum/<name>``), so two runs
+        with the same mean level can have very different underlying distributions
+        (all envs clustered mid-curriculum vs. bimodal — some stuck at level 0, some
+        far ahead). This reads the live per-env tensor directly off the terrain
+        importer and logs it as a histogram, independent of that scalar path.
+        """
+        try:
+            terrain = self.env.unwrapped.scene.terrain
+            levels = terrain.terrain_levels
+        except AttributeError:
+            return  # flat/no-curriculum terrain: nothing to log
+        if levels is None:
+            return
+        self.writer.add_histogram("Curriculum/terrain_levels_hist", levels.float(), it)
 
     def _get_terrain_params(self) -> dict:
         """Extract terrain configuration from the env config, if present."""

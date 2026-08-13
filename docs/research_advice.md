@@ -22,7 +22,12 @@
 
 ## 2. 시도할 수 있는 접근법 총정리
 
-### 📋 접근법 A: Optuna + Adaptive Balancer 통합 (현재 진행 중)
+### 📋 접근법 A: Optuna + Adaptive Balancer 통합 ✅ 완료 (2026-07-15 판정)
+
+> ✅ **결과**: bi-level(Optuna best weight + adaptive balancer) 검증 완료. 밴드 비교(n=6 vs 4)에서
+> adaptive가 auc 유의(t≈3.3)·final_mean 우세(0.88±0.10 vs 0.79±0.14). best 노브 = penalty_budget
+> 0.572 / g_min 0.595. ⚠️ g_min 0.1까지 열면 페널티 과완화 → 제자리 hop farming 붕괴(g_min ≥ 0.4 필수).
+> 탐색 공간 축소(7→3개)도 sweep_analyze.py 상관/중요도 분석으로 완료 — 아래 로드맵 Phase 1 참고.
 
 현재 sweep.py에서 Optuna TPE로 reward weight를 탐색하고 있고, `AdaptiveRewardBalancer`가 온라인으로 
 penalty gain을 조절합니다. 이 둘을 **2단계(bi-level) 최적화**로 프레이밍할 수 있습니다:
@@ -41,16 +46,77 @@ Outer loop (Optuna): reward weight 초기값 탐색 (base weights)
 
 ---
 
-### 📋 접근법 B: Population-Based Training (PBT)
+### 📋 접근법 B: Population-Based Training (PBT) ✅ 구현 / 🔄 라운드2 실행 중
 
-> [!TIP]
-> sweep.py 주석에 이미 "substrate for a future Population-Based-Training loop"이라고 적혀 있습니다.
-> PBT는 Optuna의 **상위 호환**이면서 논문 contribution으로 매우 적합합니다.
+> ✅ **구현 완료** (`scripts/co_rl/pbt.py`, 2026-07-17): population 4, 순차 1-GPU, gen마다
+> final_mean 랭킹 → 하위가 상위 ckpt+params exploit 후 5개 knob(growth/jlvz/entropy/pb/g_min)
+> ×1.2 perturb. 라운드1 교훈 = **1500it/gen은 이륙 전**(전멤버 ~0.03) + growth 상한 클립 승리
+> → 라운드2(2026-07-19~): **5000it×2gen**(생존 lineage ≤10k iter 상한 준수), growth 경계 3.4로
+> 확장. 완료 후 Optuna 챔피언(1.344)과 동일 프로토콜 비교 예정.
 
 **PBT vs Optuna의 핵심 차이:**
 - Optuna: 각 trial이 **독립적**으로 처음부터 끝까지 학습 (비효율적)
 - PBT: 학습 **도중에** 성적이 나쁜 agent의 weight를 좋은 agent에서 복사(exploit) + 
   하이퍼파라미터를 변이(explore). 동일 GPU 시간 대비 훨씬 효율적
+  ⚠️ 이 "효율적"이라는 말은 **원 논문(Jaderberg+2017)의 멀티-워커 비동기 설계**를 가리킨다.
+  우리 1-GPU 순차 구현은 이 이점을 온전히 못 받는다 — 아래에서 정정.
+
+**2026-07-20 작성, 2026-07-20 재정정 — 원 논문 확인 후 "1-GPU에서도 효율적인가?"의 정확한 답:**
+
+지난 정리에서 "체크포인트 덮어쓰기는 1-GPU에서도 완벽히 동작하니 온라인 학습의 이점이 그대로
+산다"고 썼는데, **이건 메커니즘과 효율성 이점을 섞어 과장한 것**이었다. 원 논문
+([arXiv:1711.09846](https://arxiv.org/abs/1711.09846))을 다시 확인해 바로잡는다.
+
+**원 논문이 실제로 설계한 것 — 진짜 비동기(asynchronous):**
+- *"PBT is decentralised and asynchronous, requiring minimal overhead and infrastructure."*
+  워커들이 **동시에** 돌면서 공유 저장소(key-value store/파일시스템)를 각자 독립적으로 체크한다.
+- 점검 주기(t_ready)는 도메인별로 **기계번역 2000 step마다, GAN 5000 step마다** 등 —
+  전체 학습 길이에 비하면 상당히 **잦은** 빈도.
+- 핵심 효율성 주장: *"wall-clock run time that is no greater than that of a single
+  optimisation process"* — **N개 워커를 동시에 돌리면 실제 걸리는 시간이 모델 하나 학습
+  시간과 맞먹는다.** "효율적"이란 말은 정확히 이 **wall-clock 단축**을 가리키는 것이지,
+  "PBT가 Optuna보다 총 GPU-시간(계산량)을 덜 쓴다"는 뜻이 아니다.
+- 논문은 "semi-serial"(준순차) 변형이 이론상 가능하다고만 언급 — **핵심 설계는 아니다.**
+
+**우리 1-GPU 순차 `pbt.py`는 바로 그 "semi-serial" 근사판이다:**
+```
+세대 N:  멤버0 학습(5000it, GPU) → 체크포인트 저장 → 멤버1 학습(5000it) → ... (하나씩 순서대로)
+        └ 전 멤버 다 끝나야만 성적 비교 → 하위 멤버가 상위 멤버의 체크포인트로 교체
+세대 N+1: 그 체크포인트를 --warmstart_ckpt로 이어 학습
+```
+**"gen0의 모든 멤버가 끝나야만 exploit이 가능하다"는 관찰이 정확히 맞다** — 이게 논문의
+비동기·잦은 체크(2000~5000 *step*마다) 설계와 정반대인 이유다. Isaac Sim 서브프로세스를
+매번 새로 띄우는 오버헤드 때문에, 논문처럼 "몇 천 step마다 가볍게 체크"가 불가능해 우리는
+"한 세대=5000 *iteration* 전체"라는 훨씬 굵은 단위로만 체크한다.
+
+**그래서 우리가 실제로 얻는 것 / 잃는 것:**
+- ✅ **얻는 것**: exploit의 **메커니즘**(체크포인트 파일을 다음 학습의 warmstart로 넘기는 것)은
+  GPU 개수와 무관하게 동작 — 나쁜 lineage를 좋은 lineage의 가중치로 교체하는 것 자체는 1-GPU
+  에서도 실제로 일어난다(라운드1/2에서 확인).
+- ❌ **잃는 것 1 — wall-clock 이점 전부**: 논문의 "N배 빨라짐"은 동시 실행을 전제라, 1-GPU
+  순차는 오히려 population배만큼 **더** 걸린다(우리 4×2세대×5000it ≈ 22시간, 4-GPU면 ≈5.5시간).
+- ❌ **잃는 것 2 — 잗은 체크의 이점**: 논문은 2000~5000 *step*마다 나쁜 워커를 조기에 갈아치워
+  "나쁜 설정에 계산을 낭비하지 않는다"(Hyperband의 조기중단과 같은 발상). 우리는 5000
+  *iteration* 전체를 다 태워야 비교하므로 — 실제로 gen0에서 m0/m1/m3가 5000it를 **전부 다
+  쓰고 나서야** 평범한 성적임이 드러났다. 즉 **"계산 낭비를 막는다"는 효율성도 우리 구현에서는
+  거의 실현되지 않는다.**
+- 📦 **population 크기도 축소**: 원조는 16~80워커, 우리는 wall-clock 때문에 4개로 제한 —
+  탐색 다양성이 훨씬 좁다.
+
+**정정된 결론**: 사용자 지적이 맞다 — "학습 도중 덮어쓰기 = 효율적"이라는 원 논문의 주장은
+**동시 다중 워커를 전제**로 하며, 우리 1-GPU 순차 구현은 그 효율성(wall-clock 단축, 조기
+낭비 방지)을 **거의 못 받는다.** 우리에게 남는 PBT의 실질적 가치는 딱 하나 — **"나쁜 초기
+설정에서 처음부터 재도전하는 대신, 좋은 lineage의 가중치를 이어받아 계속 다듬을 수 있다"**는
+가중치 재사용(compounding) 뿐이다(Optuna는 이것조차 없음 — trial마다 매번 처음부터). 이
+좁아진 장점 하나만으로 PBT를 쓸 가치가 있는지는 (a) Optuna로 이미 찾은 챔피언을 얼마나
+더 다듬을 수 있는지, (b) 그 대가로 치르는 wall-clock 비용, 두 가지를 저울질해서 판단해야
+한다 — 무조건 "PBT가 Optuna보다 효율적"이라 단정할 근거는 우리 환경에서는 없다.
+
+**Optuna+PBT 결합에 대한 남은 주의**: 그럼에도 결합 자체(Optuna로 좁힌 뒤 PBT로 가중치를
+이어 다듬기)는 여전히 일리 있다 — Optuna의 "제안이 똑똑함" + PBT의 "가중치 재사용"이
+서로 다른 축의 장점이라서다. 단 2026-07-20 실험에서 PBT의 center를 Optuna의 최종 챔피언이
+아니라 그보다 먼저 알려진 "그때까지의 최고"로 잘못 앵커링한 사고가 있었음(§ 진행 로그 참고)
+— 결합이 제대로 작동하려면 PBT 시작 전 **최신 Optuna 결과로 반드시 재확인**해야 한다.
 
 **구현 방향:**
 ```python
@@ -82,6 +148,27 @@ for generation in range(max_gen):
 
 > [!IMPORTANT]
 > **RAL contribution으로 가장 유망한 방향입니다.**
+
+> ✅ **구현 완료 (2026-07-19)** — `mdp.CurriculumWeightSchedule`
+> ([curriculums.py](file:///home/lch/Isaac-RL-Two-wheel-Legged-Bot/lab/flamingo/tasks/manager_based/locomotion/velocity/mdp/curriculums.py)):
+> 선택한 reward weight/param들이 **평균 terrain level의 piecewise-linear 함수**로 stage knot
+> (level 0/4/8) 사이를 보간. `--weight_schedule`로 opt-in(기본 OFF), `--adaptive_reward`와
+> 조합 시 스케줄이 balancer의 base weight를 갱신해 penalty-gain이 그 위에 합성됨(bi-level).
+> 타겟 문법: `"jump_lin_vel_z"`(weight) / `"stair_climb/growth"`(params). 기본 스케줄은
+> level 0 = 챔피언(timing #12) 값, 상위 knot은 스윕에서 "위로 열 신호"가 나온
+> jump 임펄스·growth·착지 보상을 증가. Outer-loop 탐색은
+> [stair_jump_stage_sched.yaml](file:///home/lch/Isaac-RL-Two-wheel-Legged-Bot/scripts/co_rl/sweeps/stair_jump_stage_sched.yaml)
+> (`env.curriculum.weight_schedule.params.stages.<i>.set.<target>` 오버라이드 — train.py의
+> param_overrides가 리스트 인덱스 지원하도록 확장됨).
+>
+> ```bash
+> # 단발 실험 (챔피언 대비 A/B)
+> python scripts/co_rl/train.py --task Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo \
+>     --algo ppo --headless --num_envs 8192 --adaptive_reward --weight_schedule \
+>     --warmstart_ckpt logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt
+> # outer-loop 탐색 (10 trial TPE)
+> nohup python scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_jump_stage_sched.yaml > sweep_sched.out 2>&1 &
+> ```
 
 현재 코드에 이미 **terrain curriculum** (step height 점진 증가)이 있습니다. 
 여기에 **reward weight도 curriculum과 함께 적응**시키는 프레임워크:
@@ -198,16 +285,37 @@ Ours     |    90%      |    75%       | 17%
 
 ## 5. 추천 로드맵
 
-### Phase 1: Optuna Sweep 완성 (현재 → 2주)
-- [x] sweep.py + stair_jump_example.yaml 구현 완료
-- [ ] 20 trial TPE sweep 실행 → 결과 분석
-- [ ] 상관관계 분석: 어떤 weight가 성능에 가장 영향을 미치는지 파악
-- [ ] Top-3 중요 파라미터 식별 → focused sweep
+> 📊 상세 수치·플롯·재현 커맨드는 [autotuning_results.md](file:///home/lch/Isaac-RL-Two-wheel-Legged-Bot/docs/autotuning_results.md) 참고.
+> 지표 = **final_mean**(terrain 곡선 마지막 20% 평균). terrain level ≈ 계단 높이: 5cm + level×1cm.
 
-### Phase 2: PBT 구현 (2-4주)
-- [ ] sweep.py에 PBT 모드 추가 (exploit/explore + checkpoint sharing)
-- [ ] Optuna vs PBT 비교 실험
-- [ ] Curriculum-coupled weight scheduling 실험
+### Phase 1: Optuna Sweep 완성 ✅ (2026-07-07 ~ 07-11 완료)
+- [x] sweep.py + stair_jump_example.yaml 구현 완료
+- [x] 20 trial TPE sweep 실행 → 결과 분석
+      — broad(isaacsim 사고로 3 trial만 생존) + focused A(12) + focused_auto B(20).
+      **동일 설정에서도 12배 분산** 발견(시드/GPU 비결정) → "단일 run 비교 금지" 프로토콜 확립.
+- [x] 상관관계 분석 — `sweep_analyze.py`(Spearman + PedAnova 중요도) 구현·적용
+- [x] Top-3 중요 파라미터 식별 → focused sweep
+      — **growth(2.4~2.6)·jump_lin_vel_z(중요도 0.96)·entropy_coef(0.007~0.009)**만 중요,
+      climb_weight·base_height는 무관. focused2(10/10 완주): best 0.99 + LandingStability
+      리워드로 bad_orientation 종료 **-41%**, 실패율 25%→0%.
+
+### Phase 2: PBT 구현 ✅ 구현 / 🔄 실험 진행 중
+- [x] PBT 모드 추가 (exploit/explore + checkpoint sharing)
+      — `scripts/co_rl/pbt.py`(sweep 인프라 재사용, warmstart 체인, pbt_state.json 재개).
+      라운드1 gen0: growth가 **상한 3.0에 클립된 채 승리** → 라운드2 경계 3.4로 확장.
+- [ ] Optuna vs PBT 비교 실험 — 🔄 **라운드2(5000it×2gen×4멤버) 실행 중** (2026-07-19~,
+      `_pbt/pbt_2026-07-19_15-22-09`). 완료 후 챔피언(1.344)과 동일 프로토콜로 비교.
+- [x] Curriculum-coupled weight scheduling **구현** (2026-07-19, 접근법 D →
+      `CurriculumWeightSchedule` + `--weight_schedule` + `stair_jump_stage_sched.yaml`)
+- [ ] Curriculum-coupled weight scheduling **실험** — PBT 라운드2·capability probe 뒤 GPU 확보 시
+
+**중간 결과(2026-07-19 기준):** 역대 챔피언 = **timing sweep #12, final_mean 1.344**
+(수동 baseline 0.65 대비 +107%). 방법별 확정 효과: adaptive balancer(밴드 비교 auc t≈3.3 유의,
+최악 시드가 non-adaptive 평균 수준으로 상승), 착지 보상(실패율 0), hop 트리거 기하
+(step_threshold↑ = 결정적). **한계: top-5 전부 계단 6.0~6.5cm에서 정체** — 목표 15cm까지는
+HP 튜닝만으론 불가 판단 → 10~15cm **capability probe**(고정 높이 6단계, 물리 한계 vs 정렬
+문제 판별)가 PBT 종료 후 자동 실행 대기 중(`run_pbt_then_probe.sh`). 다음 구조 후보:
+yaw-정렬 게이팅 리워드 + 양바퀴 동시 감지(§2 참고), 그리고 본 접근법 D.
 
 ### Phase 3: Sim-to-Real (6-10주)
 - [ ] Best policy를 실제 Flamingo에 zero-shot transfer
@@ -215,7 +323,9 @@ Ours     |    90%      |    75%       | 17%
 - [ ] Failure mode 분석 + fine-tuning
 
 ### Phase 4: 논문 작성 (병행)
-- [ ] 실험 결과 정리 + ablation study
+- [ ] 실험 결과 정리 + ablation study — 🔄 부분 진행: [autotuning_results.md](file:///home/lch/Isaac-RL-Two-wheel-Legged-Bot/docs/autotuning_results.md)
+      (라운드별 표 + 학습곡선/밴드 플롯) + [paper_checklist.md](file:///home/lch/Isaac-RL-Two-wheel-Legged-Bot/docs/paper_checklist.md)
+      작성됨. Table 1 재료(Manual/Optuna/Adaptive/Timing) 확보, PBT 열·multi-seed 확정 남음.
 - [ ] RAL 포맷 논문 초안
 
 ---

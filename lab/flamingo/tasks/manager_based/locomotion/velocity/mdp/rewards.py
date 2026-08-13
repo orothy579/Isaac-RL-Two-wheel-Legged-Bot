@@ -1216,6 +1216,7 @@ def cliped_joint_applied_torque_limits(
     out_of_limits = torch.abs(
         asset.data.applied_torque[:, asset_cfg.joint_ids] - asset.data.computed_torque[:, asset_cfg.joint_ids]
     )
+    out_of_limits = torch.nan_to_num(out_of_limits, nan=0.0, posinf=max_penalty, neginf=max_penalty)
     return torch.sum(out_of_limits, dim=1).clamp(max=max_penalty)
 
 
@@ -1227,14 +1228,25 @@ def clipped_joint_applied_torque_limits(
     return cliped_joint_applied_torque_limits(env, asset_cfg, max_penalty)
 
 
-def cliped_action_rate_l2(env: ManagerBasedRLEnv, max_penalty: float = 10.0) -> torch.Tensor:
+def cliped_action_rate_l2(
+    env: ManagerBasedRLEnv,
+    max_delta: float = 2.0,
+    max_penalty: float = 16.0,
+) -> torch.Tensor:
     """Penalize action rate with a bounded per-step L2 penalty."""
-    action_rate = torch.sum(torch.square(env.action_manager.action - env.action_manager.prev_action), dim=1)
+    action = torch.nan_to_num(env.action_manager.action, nan=0.0, posinf=1.0, neginf=-1.0)
+    prev_action = torch.nan_to_num(env.action_manager.prev_action, nan=0.0, posinf=1.0, neginf=-1.0)
+    delta = (action - prev_action).clamp(min=-max_delta, max=max_delta)
+    action_rate = torch.sum(torch.square(delta), dim=1)
     return action_rate.clamp(max=max_penalty)
 
 
-def clipped_action_rate_l2(env: ManagerBasedRLEnv, max_penalty: float = 10.0) -> torch.Tensor:
-    return cliped_action_rate_l2(env, max_penalty)
+def clipped_action_rate_l2(
+    env: ManagerBasedRLEnv,
+    max_delta: float = 2.0,
+    max_penalty: float = 16.0,
+) -> torch.Tensor:
+    return cliped_action_rate_l2(env, max_delta, max_penalty)
 
 
 def base_height_adaptive_l2(

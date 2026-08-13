@@ -1,0 +1,60 @@
+# Approach D — curriculum-coupled reward scheduling (bi-level, outer loop).
+# Reward knobs are no longer fixed: CurriculumWeightSchedule interpolates them over the mean
+# terrain level between 3 knots (level 0 / 4 / 8). This sweep FIXES everything the earlier
+# rounds already settled (champion timing #12 + adaptive #4) and searches only the UPPER
+# knots — i.e. "what should the rewards become once the stairs get tall?".
+#   - stage 1/2 jump_lin_vel_z : hop impulse ramp (importance 0.96, "higher is better")
+#   - stage 2 stair_climb/growth: climb-reward steepness at the tall rows (won while clipped)
+#   - stage 2 landing_stability : how much the tall-step landing must be rewarded
+# Level-0 knot stays at the champion values, so a run that never leaves the shallow rows
+# behaves exactly like the champion — the control is the existing champion runs
+# (timing #12 final_mean 1.344; compare Curriculum/climb_units too).
+#
+# Run (isaacsim terminal, detached):
+#   nohup python scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_jump_stage_sched.yaml > sweep_sched.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 5000
+
+method: optuna
+num_samples: 10
+seed: 46
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--adaptive_reward"       # inner loop: penalty gain on top of the scheduled base weights
+  - "--weight_schedule"       # approach D: enable the stage schedule
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Flat_Stand_Drive/ppo/2026-07-02_12-12-49/model_1499.pt"
+
+metric:
+  tag_contains: terrain_level
+  reduce: final_mean
+  tail_frac: 0.2
+  goal: max
+
+parameters:
+  # ---- FIXED: champion (timing #12) reward/HP/trigger settings ----
+  env.rewards.stair_climb.weight:                       {values: [23.5]}
+  env.rewards.base_height_jump.weight:                  {values: [-15.0]}
+  env.curriculum.terrain_levels.params.promote_steps:   {values: [3.0]}
+  agent.algorithm.entropy_coef:                         {values: [0.008431]}
+  agent.algorithm.learning_rate:                        {values: [0.001]}
+  env.curriculum.adaptive_reward.params.penalty_budget: {values: [0.572]}
+  env.curriculum.adaptive_reward.params.g_min:          {values: [0.595]}
+  env.commands.stair_event.y_halfwidth:                 {values: [0.16468]}
+  env.commands.stair_event.step_threshold:              {values: [0.04151]}
+  env.commands.stair_event.event_during_time:           {values: [0.46799]}
+  # NOTE: stair_climb growth & jump_lin_vel_z at level 0 come from the schedule's stage-0
+  # knot (champion values) — do NOT also override env.rewards.* for them here, the schedule
+  # would overwrite it anyway.
+
+  # ---- SEARCHED: the upper knots of the schedule ----
+  env.curriculum.weight_schedule.params.stages.1.set.jump_lin_vel_z:      {min: 5.0, max: 9.0}
+  env.curriculum.weight_schedule.params.stages.2.set.jump_lin_vel_z:      {min: 8.0, max: 14.0}
+  env.curriculum.weight_schedule.params.stages.2.set.stair_climb/growth:  {min: 2.9, max: 3.5}
+  env.curriculum.weight_schedule.params.stages.2.set.landing_stability:   {min: 6.0, max: 12.0}

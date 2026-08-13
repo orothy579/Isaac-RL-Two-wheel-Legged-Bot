@@ -1,0 +1,12 @@
+{
+  "env.rewards.stair_climb.weight": 23.5,
+  "env.rewards.stair_climb.params.growth": 2.5251,
+  "env.rewards.jump_lin_vel_z.weight": 4.3904,
+  "env.rewards.base_height_jump.weight": -15.0,
+  "env.curriculum.terrain_levels.params.promote_steps": 3.0,
+  "agent.algorithm.entropy_coef": 0.008431,
+  "agent.algorithm.learning_rate": 0.001,
+  "env.commands.stair_event.y_halfwidth": 0.16467576835757058,
+  "env.commands.stair_event.step_threshold": 0.041511286630781796,
+  "env.commands.stair_event.event_during_time": 0.4679925632356595
+}

@@ -47,6 +47,26 @@ def add_co_rl_args(parser: argparse.ArgumentParser):
         "while the skill is weak, then restores them toward nominal as the task reward grows.",
     )
     arg_group.add_argument(
+        "--weight_schedule",
+        action="store_true",
+        default=False,
+        help="Enable curriculum-coupled reward scheduling (approach D) on tasks that define it "
+        "(e.g. stair_jump): selected reward weights/params follow the mean terrain level over "
+        "piecewise-linear stages instead of staying fixed. Opt-in: OFF by default. Composes with "
+        "--adaptive_reward (schedule sets the base weights, the balancer's penalty gain applies on top).",
+    )
+    arg_group.add_argument(
+        "--roger_threshold",
+        action="store_true",
+        default=False,
+        help="Enable the ROGER-paper-faithful threshold/Delta_t penalty balancer (RogerThresholdBalancer) "
+        "on tasks that define it (e.g. stair_jump), as an ALTERNATIVE to --adaptive_reward's ratio-target "
+        "approximation. Targets proximity to each penalty's physical safety threshold (tau) instead of an "
+        "arbitrary reward ratio, and also suppresses the task reward near violation (not just amplifying "
+        "penalties). Opt-in: OFF by default. Mutually exclusive with --adaptive_reward (both would fight "
+        "over the same reward-term weights) — --adaptive_reward wins if both are passed.",
+    )
+    arg_group.add_argument(
         "--forward_gate",
         type=float,
         nargs="?",

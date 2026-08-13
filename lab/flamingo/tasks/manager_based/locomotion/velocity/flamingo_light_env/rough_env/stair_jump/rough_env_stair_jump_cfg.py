@@ -32,6 +32,8 @@ Warm-start from the Phase 1 rough stand_drive policy::
         --warmstart_ckpt logs/co_rl/Flamingo_Light_Rough_Stand_Drive/ppo/<run>/<model_*.pt>
 """
 
+import math
+
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -92,6 +94,8 @@ class FlamingoStairJumpRewardsCfg(StandDriveRewardsCfg):
             "step_height": STEP_HEIGHT,
             "growth": 2.0,  # step1->2, step2->4, step3->8, ... (per new step)
             "coef": 1.0,
+            "max_exponent": 10.0,
+            "max_reward": 100.0,
         },
     )
     # Stop on a zero velocity command: penalize xy POSITION drift from where the zero
@@ -213,9 +217,75 @@ def _setup_stair_jump(cfg) -> None:
         },
     )
 
+    # --- alternative online balancer: ROGER's actual threshold/Delta_t mechanism (opt-in via
+    # --roger_threshold, mutually exclusive with --adaptive_reward). Unlike the ratio-target
+    # balancer above (penalty_budget=0.5 was an unjustified guess, and our own sweep of it
+    # favored LOWER values), this targets proximity to each penalty's real physical safety
+    # limit tau. tau for flat_orientation_l2 is DERIVED, not guessed: the bad_orientation
+    # termination fires at tilt > limit_angle=0.5 rad (velocity_env_cfg.py), and
+    # flat_orientation_l2 = sin(tilt)^2, so tau = sin(0.5)**2 is the exact boundary the
+    # termination itself uses. stand_still/base_height_jump have no natural hard limit, so
+    # they get a soft practical target instead (flagged as a free choice, not derived).
+    cfg.curriculum.roger_threshold = CurrTerm(
+        func=mdp.RogerThresholdBalancer,
+        params={
+            "positive_terms": ["stair_climb", "jump_lin_vel_z", "jump_feet_off", "foot_clearance"],
+            "penalty_terms": ["flat_orientation_l2", "stand_still", "base_height_jump"],
+            "tau": {
+                "flat_orientation_l2": math.sin(0.5) ** 2,  # derived from bad_orientation limit_angle=0.5 rad
+                "stand_still": 0.05,        # soft target (no natural hard limit) -- free choice
+                "base_height_jump": 0.05,   # soft target (no natural hard limit) -- free choice
+            },
+            "delta_floor": 0.05,    # safety floor: no penalty ever fully zeroed (see class docstring)
+            "ema": 0.98,
+            "warmup_batches": 50,
+            "update_interval": 200,
+        },
+    )
+
+    # --- approach D: curriculum-coupled reward scheduling (opt-in via --weight_schedule) ---
+    # Selected reward knobs follow the terrain difficulty (piecewise-linear over the mean
+    # terrain level) instead of staying fixed: taller rows get a stronger hop impulse, more
+    # clearance/landing reward and a steeper climb growth. Knot values start at the current
+    # champion (timing #12) at level 0; the upper knots push the knobs the sweeps said want
+    # to go up (jump_lin_vel_z importance 0.96 "higher is better", growth won while clipped
+    # at its upper bound). The outer loop (sweep.py / pbt.py) can search these knots via
+    # `env.curriculum.weight_schedule.params.stages.<i>.set.<target>` overrides.
+    cfg.curriculum.weight_schedule = CurrTerm(
+        func=mdp.CurriculumWeightSchedule,
+        params={
+            "stages": [
+                {"level": 0.0, "set": {
+                    "jump_lin_vel_z": 4.39, "jump_feet_off": 8.0, "foot_clearance": 2.0,
+                    "landing_stability": 5.0, "stair_climb/growth": 2.525,
+                }},
+                {"level": 4.0, "set": {
+                    "jump_lin_vel_z": 7.0, "jump_feet_off": 10.0, "foot_clearance": 3.0,
+                    "landing_stability": 7.0, "stair_climb/growth": 2.9,
+                }},
+                {"level": 8.0, "set": {
+                    "jump_lin_vel_z": 10.0, "jump_feet_off": 12.0, "foot_clearance": 4.0,
+                    "landing_stability": 9.0, "stair_climb/growth": 3.2,
+                }},
+            ],
+        },
+    )
+
     # keep velocity-command tracking (deployable forward directive); drop the
     # integral-position term (a competing position objective).
     cfg.rewards.error_track_pos_integral = None
+    # Keep sweep012's observation and reward dimensions intact while allowing the full
+    # recovery mode to request a short backward retreat and faster re-approach. In baseline
+    # and one-shot modes no negative phase code is emitted, so this is exactly the inherited
+    # velocity tracking formula.
+    cfg.rewards.track_lin_vel_xy_exp.func = mdp_stair.track_lin_vel_xy_recovery_exp
+    cfg.rewards.track_lin_vel_xy_exp.params.update(
+        {
+            "event_command_name": "stair_event",
+            "retreat_speed": -0.45,
+            "runup_speed": 1.0,
+        }
+    )
 
     # forward velocity command = the real deployment directive (operator/joystick).
     # Straight climb (no commanded yaw); Phase 1 already learned x+yaw driving.
@@ -248,6 +318,13 @@ def _setup_stair_jump(cfg) -> None:
     )
     # swap the plain (always-on) base-height for the jump-gated version.
     cfg.rewards.base_height = None
+    # The policy Gaussian itself stays unchanged for checkpoint compatibility. During
+    # training the runner clips only the action sent to the environment; these bounded
+    # penalty terms are a second line of defense against a rare numerical outlier.
+    cfg.rewards.action_rate_l2.func = mdp.clipped_action_rate_l2
+    cfg.rewards.action_rate_l2.params = {"max_delta": 2.0, "max_penalty": 16.0}
+    cfg.rewards.joint_applied_torque_limits.func = mdp.clipped_joint_applied_torque_limits
+    cfg.rewards.joint_applied_torque_limits.params["max_penalty"] = 100.0
     # a run-up take-off needs the body to PITCH; the inherited -10 flat-orientation
     # penalty forbids that (flat-jump used only -1). Relax it for the jump task.
     if cfg.rewards.flat_orientation_l2 is not None:

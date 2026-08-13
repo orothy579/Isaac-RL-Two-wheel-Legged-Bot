@@ -1,0 +1,64 @@
+# Experiment 3 (user guideline): continue from the sweep012 CHECKPOINT itself (not from
+# Phase-1 Flat_Stand_Drive), run PBT with population=4, branching (exploit/explore) every
+# 1000 iterations, for 5 generations = 5000 additional iterations (total ~10000 on the
+# surviving lineage). center_params = sweep012's exact reward/HP/trigger values, --adaptive_reward
+# (NOT --roger_threshold, per user's answer: 2/3 use adaptive_reward).
+#
+# NOTE on iteration counting: like all pbt.py runs, each generation's train.py call uses
+# --warmstart_ckpt (load_transfer), so its OWN iteration counter restarts at 0 each generation
+# (TB curves need x-shifting by generation*iters_per_gen to view as one continuous 0-10000
+# curve, same as done for the earlier PBT round). The member's cumulative iterations on top
+# of sweep012 = generation_index * 1000 + local_iter; total on the lineage = 5000 (sweep012)
+# + up to 5000 (this PBT) = ~10000.
+#
+# Run (isaacsim-working terminal, detached):
+#   nohup python scripts/co_rl/pbt.py --config scripts/co_rl/sweeps/pbt_from_sweep012.yaml > pbt_from_012.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+
+population: 4
+generations: 5
+iters_per_gen: 1000
+exploit_frac: 0.25
+perturb_factor: 1.2
+seed: 12
+
+# continue from sweep012's OWN checkpoint (not Phase-1) -- this is what makes it "이어서 PBT"
+init_ckpt: "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Rough_Stair_Jump/ppo/2026-07-18_07-11-27_sweep012/model_4999.pt"
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--adaptive_reward"
+
+metric:
+  tag_contains: terrain_level
+  reduce: final_mean
+  tail_frac: 0.2       # 20% of 1000 iters = 200 -- shorter generations, still robust to spikes
+  goal: max
+
+# center = sweep012's exact values (member 0 = exactly this; others = perturbed copies)
+center_params:
+  env.rewards.stair_climb.weight:                       23.5
+  env.rewards.stair_climb.params.growth:                2.5251
+  env.rewards.jump_lin_vel_z.weight:                    4.3904
+  env.rewards.base_height_jump.weight:                  -15.0
+  env.curriculum.terrain_levels.params.promote_steps:   3.0
+  agent.algorithm.entropy_coef:                         0.008431
+  agent.algorithm.learning_rate:                        0.001
+  env.curriculum.adaptive_reward.params.penalty_budget: 0.572
+  env.curriculum.adaptive_reward.params.g_min:          0.595
+  env.commands.stair_event.y_halfwidth:                 0.16467576835757058
+  env.commands.stair_event.step_threshold:              0.041511286630781796
+  env.commands.stair_event.event_during_time:           0.4679925632356595
+
+# same evolve set/bounds as the previous 5000-it PBT round (round-2), reused as-is.
+evolve:
+  env.rewards.stair_climb.params.growth:                {min: 2.2, max: 3.6}
+  env.rewards.jump_lin_vel_z.weight:                    {min: 3.5, max: 7.0}
+  agent.algorithm.entropy_coef:                         {min: 0.004, max: 0.012}
+  env.curriculum.adaptive_reward.params.penalty_budget: {min: 0.35, max: 0.8}
+  env.curriculum.adaptive_reward.params.g_min:          {min: 0.45, max: 0.85}

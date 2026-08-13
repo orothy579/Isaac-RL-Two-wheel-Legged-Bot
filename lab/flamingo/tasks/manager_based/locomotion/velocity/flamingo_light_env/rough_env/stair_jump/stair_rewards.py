@@ -61,6 +61,8 @@ class StairClimbProgress(ManagerTermBase):
         step_height: float = 0.05,
         growth: float = 2.0,
         coef: float = 1.0,
+        max_exponent: float = 10.0,
+        max_reward: float = 100.0,
         vel_command_name: str = "base_velocity",
         min_cmd_speed: float = 0.05,
     ) -> torch.Tensor:
@@ -76,7 +78,14 @@ class StairClimbProgress(ManagerTermBase):
         cur_step = torch.round((ground_z - self.base_ground) / step_height).clamp(min=0.0)
 
         new_max = cur_step > self.max_step
-        reward = torch.where(new_max, coef * (growth ** cur_step), torch.zeros_like(cur_step))
+        # The original unbounded ``growth ** cur_step`` can create a very rare reward
+        # spike at high cumulative height and poison the PPO value target. Preserve its
+        # curriculum ordering while placing an explicit ceiling on a single success.
+        bounded_step = cur_step.clamp(max=max_exponent)
+        climb_value = torch.nan_to_num(
+            coef * (growth ** bounded_step), nan=0.0, posinf=max_reward, neginf=0.0
+        ).clamp(max=max_reward)
+        reward = torch.where(new_max, climb_value, torch.zeros_like(cur_step))
         self.max_step = torch.maximum(self.max_step, cur_step)
 
         return reward * _cmd_gate(env, vel_command_name, min_cmd_speed)
@@ -193,6 +202,41 @@ def _cmd_gate(env: ManagerBasedRLEnv, vel_command_name: str, min_cmd_speed: floa
     """
     cmd_xy = env.command_manager.get_command(vel_command_name)[:, :2]
     return (torch.norm(cmd_xy, dim=1) > min_cmd_speed).float()
+
+
+def track_lin_vel_xy_recovery_exp(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str,
+    event_command_name: str = "stair_event",
+    retreat_speed: float = -0.45,
+    runup_speed: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Velocity tracking that makes the recovery phases reward-compatible.
+
+    Outside recovery this is numerically identical to the inherited stand-drive velocity
+    reward. The stair-event command keeps its original two observation channels and uses
+    negative elapsed-time codes for the extra phases: -1 for retreat and -2 for run-up.
+    During those phases the x target is temporarily replaced with a backward retreat or
+    faster forward approach, so the original +x command reward no longer fights the
+    requested run-up behavior.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    target = env.command_manager.get_command(command_name)[:, :2].clone()
+    phase_code = env.command_manager.get_command(event_command_name)[:, 1]
+    retreat = (phase_code <= -0.5) & (phase_code > -1.5)
+    runup = phase_code <= -1.5
+    target[:, 0] = torch.where(
+        retreat, torch.full_like(target[:, 0], retreat_speed), target[:, 0]
+    )
+    target[:, 0] = torch.where(
+        runup, torch.full_like(target[:, 0], runup_speed), target[:, 0]
+    )
+    error = torch.sum(
+        torch.square(target - asset.data.root_link_lin_vel_b[:, :2]), dim=1
+    )
+    return torch.exp(-error / std**2)
 
 
 def hop_up_event(

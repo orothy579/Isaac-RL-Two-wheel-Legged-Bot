@@ -187,6 +187,12 @@ class CoRlPolicyRunnerCfg:
     empirical_normalization: bool = MISSING
     """Whether to use empirical normalization."""
 
+    action_clip: float | None = None
+    """Optional symmetric action bound applied only at the environment boundary."""
+
+    reward_clip: float | None = None
+    """Optional symmetric per-step reward bound used before return computation."""
+
     policy: CoRlPpoActorCriticCfg = MISSING
     """The policy configuration."""
 

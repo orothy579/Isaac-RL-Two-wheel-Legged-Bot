@@ -122,14 +122,18 @@ def suggest_params(trial, parameters: dict) -> dict:
 # --------------------------------------------------------------------------------------
 def parse_log_dir(logfile: str) -> str | None:
     """Recover the run's log dir from the marker line train.py prints."""
+    log_dir = None
     try:
         with open(logfile) as f:
             for line in f:
                 if LOG_DIR_MARKER in line:
-                    return line.split(LOG_DIR_MARKER, 1)[1].strip()
+                    # A resumed grid trial appends to the same sweep log. Keep the LAST
+                    # marker so metric extraction uses the resumed run, not the interrupted
+                    # run whose marker appears first.
+                    log_dir = line.split(LOG_DIR_MARKER, 1)[1].strip()
     except OSError:
         return None
-    return None
+    return log_dir
 
 
 def extract_metric(log_dir: str, metric: dict) -> float:
@@ -228,6 +232,14 @@ def _latest_checkpoint(run_dir: str) -> str | None:
     return max(ckpts, key=_iter_num)
 
 
+def _checkpoint_iteration(filename: str) -> int:
+    """Parse ``model_<iteration>.pt`` and fail loudly on an unexpected filename."""
+    try:
+        return int(filename.removeprefix("model_").removesuffix(".pt"))
+    except ValueError as exc:
+        raise ValueError(f"invalid checkpoint filename: {filename!r}") from exc
+
+
 def build_cmd(python: str, task: str, algo: str, max_iter: int, run_name: str,
               override_path: str, base_args: list[str],
               resume_run: str | None = None, resume_ckpt: str | None = None) -> list[str]:
@@ -268,8 +280,16 @@ def run_trial(idx: int, params: dict, cfg: dict, results_dir: str, python: str,
     # --- checkpoint resume support ---
     resume_run = None
     resume_ckpt = None
+    run_iterations = int(cfg["max_iterations"])
     if resume:
-        prev_run = _find_previous_run(cfg, run_name)
+        # Prefer the exact run recorded in this sweep's own log. Falling back to a global
+        # suffix search can accidentally resume an unrelated, newer ``*_sweep000`` run.
+        previous_log_dir = parse_log_dir(logfile)
+        prev_run = None
+        if previous_log_dir and os.path.isdir(previous_log_dir):
+            prev_run = os.path.basename(previous_log_dir)
+        if prev_run is None:
+            prev_run = _find_previous_run(cfg, run_name)
         if prev_run:
             exp_name = cfg.get("experiment_name")
             algo = cfg.get("algo", "ppo")
@@ -278,13 +298,21 @@ def run_trial(idx: int, params: dict, cfg: dict, results_dir: str, python: str,
             if ckpt:
                 resume_run = prev_run
                 resume_ckpt = ckpt
-                print(f"[sweep] trial {idx}: RESUMING from {prev_run}/{ckpt}")
+                ckpt_iter = _checkpoint_iteration(ckpt)
+                # ``OnPolicyRunner.learn(n)`` interprets n as ADDITIONAL iterations after
+                # loading. Its range starts at ckpt_iter (repeating that boundary update),
+                # hence target - ckpt_iter reaches model_(target-1) exactly.
+                run_iterations = max(1, int(cfg["max_iterations"]) - ckpt_iter)
+                print(
+                    f"[sweep] trial {idx}: RESUMING from {prev_run}/{ckpt} "
+                    f"for {run_iterations} remaining iterations"
+                )
             else:
                 print(f"[sweep] trial {idx}: previous run {prev_run} found but no checkpoints; starting fresh")
         else:
             print(f"[sweep] trial {idx}: no previous run found for resume; starting fresh")
 
-    cmd = build_cmd(python, cfg["task"], cfg.get("algo", "ppo"), int(cfg["max_iterations"]),
+    cmd = build_cmd(python, cfg["task"], cfg.get("algo", "ppo"), run_iterations,
                     run_name, override_path, cfg.get("base_args", []),
                     resume_run=resume_run, resume_ckpt=resume_ckpt)
     print(f"[sweep] trial {idx}: {params}")
@@ -387,10 +415,46 @@ def main():
     rng = random.Random(cfg.get("seed", 42))
     trials = expand_grid(cfg["parameters"]) if method == "grid" \
         else sample_random(cfg["parameters"], int(cfg.get("num_samples", 10)), rng)
+    # Grid/random sweeps are sequential and can be interrupted in the middle of a long
+    # training run. Preserve already completed rows and resume an incomplete trial from
+    # the checkpoint referenced by this exact results directory.
     rows = []
+    completed: dict[int, dict] = {}
+    results_csv = os.path.join(results_dir, "results.csv")
+    if os.path.isfile(results_csv):
+        import pandas as pd
+
+        for row in pd.read_csv(results_csv).to_dict(orient="records"):
+            if str(row.get("status")) != "ok":
+                continue
+            # A SIGINT can make train.py exit cleanly after saving an intermediate model.
+            # Do not trust status alone: a trial is complete only if its latest checkpoint
+            # reached the configured final iteration.
+            row_run = row.get("log_dir")
+            ckpt = _latest_checkpoint(row_run) if isinstance(row_run, str) and os.path.isdir(row_run) else None
+            ckpt_iter = _checkpoint_iteration(ckpt) if ckpt else -1
+            if ckpt_iter >= int(cfg["max_iterations"]) - 1:
+                completed[int(row["trial"])] = row
+            else:
+                print(
+                    f"[sweep] trial {int(row['trial'])}: status=ok but latest checkpoint is "
+                    f"{ckpt or 'missing'} (< model_{int(cfg['max_iterations']) - 1}.pt); resuming"
+                )
+        if completed:
+            print(f"[sweep] reusing {len(completed)} completed grid trial(s) from results.csv")
     try:
         for i, t in enumerate(trials):
-            rows.append(run_trial(i, t, cfg, results_dir, args.python))
+            if i in completed:
+                rows.append(completed[i])
+                print(f"[sweep] trial {i}: already complete — skipping")
+                continue
+
+            trial_log = os.path.join(results_dir, f"sweep{i:03d}.log")
+            previous_log_dir = parse_log_dir(trial_log)
+            has_checkpoint = False
+            if previous_log_dir and os.path.isdir(previous_log_dir):
+                has_checkpoint = _latest_checkpoint(previous_log_dir) is not None
+            rows.append(run_trial(i, t, cfg, results_dir, args.python, resume=has_checkpoint))
             _write_results(rows, results_dir, goal)  # checkpoint after every trial
             _mirror_to_run(rows[-1], results_dir)    # also drop results into the run folder's sweep/
             if rows[-1]["status"].startswith("train_exit") or rows[-1]["status"] == "no_log_dir":

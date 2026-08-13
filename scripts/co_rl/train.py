@@ -123,10 +123,17 @@ def apply_param_overrides(env_cfg, agent_cfg, spec: str | None) -> None:
         parts = sub.split(".")
         obj = root
         for p in parts[:-1]:
-            obj = obj[p] if isinstance(obj, dict) else getattr(obj, p)
+            if isinstance(obj, dict):
+                obj = obj[p]
+            elif isinstance(obj, (list, tuple)) and p.lstrip("-").isdigit():
+                obj = obj[int(p)]  # list index, e.g. curriculum.weight_schedule.params.stages.1
+            else:
+                obj = getattr(obj, p)
         last = parts[-1]
         if isinstance(obj, dict):
             obj[last] = value
+        elif isinstance(obj, list) and last.lstrip("-").isdigit():
+            obj[int(last)] = value
         else:
             setattr(obj, last, value)
         print(f"[INFO] param override: {key} = {value}")
@@ -160,6 +167,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg | Man
             print("[INFO]: Adaptive reward balancer DISABLED (pass --adaptive_reward to enable).")
     elif args_cli.adaptive_reward:
         print("[WARN]: --adaptive_reward set but this task defines no 'adaptive_reward' curriculum term; ignoring.")
+
+    # ROGER-faithful threshold/Delta_t balancer: alternative to --adaptive_reward, same reward
+    # terms -> mutually exclusive (adaptive_reward wins if both are passed, since it's the
+    # longer-validated one; warn so the conflict isn't silent).
+    if hasattr(env_cfg, "curriculum") and getattr(env_cfg.curriculum, "roger_threshold", None) is not None:
+        if args_cli.roger_threshold and not args_cli.adaptive_reward:
+            print("[INFO]: ROGER threshold/Delta_t balancer ENABLED (paper-faithful, tau-based).")
+        else:
+            if args_cli.roger_threshold and args_cli.adaptive_reward:
+                print("[WARN]: both --roger_threshold and --adaptive_reward passed; they would fight "
+                      "over the same reward-term weights. Disabling --roger_threshold (adaptive_reward wins).")
+            env_cfg.curriculum.roger_threshold = None
+            if not args_cli.roger_threshold:
+                print("[INFO]: ROGER threshold/Delta_t balancer DISABLED (pass --roger_threshold to enable).")
+    elif args_cli.roger_threshold:
+        print("[WARN]: --roger_threshold set but this task defines no 'roger_threshold' curriculum term; ignoring.")
+
+    # curriculum-coupled reward scheduling (approach D) is opt-in the same way.
+    if hasattr(env_cfg, "curriculum") and getattr(env_cfg.curriculum, "weight_schedule", None) is not None:
+        if args_cli.weight_schedule:
+            print("[INFO]: Curriculum weight schedule ENABLED (reward knobs follow the terrain level).")
+        else:
+            env_cfg.curriculum.weight_schedule = None
+            print("[INFO]: Curriculum weight schedule DISABLED (pass --weight_schedule to enable).")
+    elif args_cli.weight_schedule:
+        print("[WARN]: --weight_schedule set but this task defines no 'weight_schedule' curriculum term; ignoring.")
 
     # forward-progress gate (anti-farming): opt-in. Turn on the hop-reward gate when requested
     # so an in-place vertical bob earns ~0 (only relevant to tasks with the jump hop terms).

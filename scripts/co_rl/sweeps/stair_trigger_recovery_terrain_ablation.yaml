@@ -1,0 +1,71 @@
+# Terrain-level-first continuation from sweep012/model_4999.
+#
+# This restores the proven sweep012 hop/landing shaping and the original unclipped
+# training action path. Only numerical guards that are inactive in normal operation
+# remain: bounded pathological penalty terms, per-step reward guard, and non-finite
+# PPO update rejection. Promotion remains at 3 nominal climb units; it is not relaxed
+# merely to make the terrain-level metric look better.
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 5000
+
+method: grid
+seed: 47
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--adaptive_reward"
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Rough_Stair_Jump/ppo/2026-07-18_07-11-27_sweep012/model_4999.pt"
+
+# Primary and only ranking objective: reach and hold higher terrain rows.
+metric:
+  tag_contains: "Curriculum/terrain_levels"
+  reduce: final_mean
+  tail_frac: 0.2
+  goal: max
+
+parameters:
+  env.commands.stair_event.trigger_mode:
+    values: ["baseline", "one_shot", "recovery_runup"]
+
+  # Numerical guards only. No agent.action_clip override: preserve the action/exploration
+  # distribution that produced the old terrain-level 2.06/2.64 results.
+  agent.reward_clip:                                      {values: [100.0]}
+  env.rewards.action_rate_l2.params.max_delta:            {values: [10.0]}
+  env.rewards.action_rate_l2.params.max_penalty:          {values: [100.0]}
+  env.rewards.joint_applied_torque_limits.params.max_penalty: {values: [100.0]}
+  env.rewards.stair_climb.params.max_exponent:            {values: [10.0]}
+  env.rewards.stair_climb.params.max_reward:              {values: [100.0]}
+
+  # Proven sweep012 reward/curriculum settings, restored exactly where behavior matters.
+  env.rewards.stair_climb.weight:                         {values: [23.5]}
+  env.rewards.stair_climb.params.growth:                  {values: [2.5251]}
+  env.rewards.jump_lin_vel_z.weight:                      {values: [4.3904]}
+  env.rewards.jump_feet_off.weight:                       {values: [8.0]}
+  env.rewards.foot_clearance.weight:                      {values: [2.0]}
+  env.rewards.jump_push_ground.weight:                    {values: [0.05]}
+  env.rewards.landing_stability.weight:                   {values: [5.0]}
+  env.rewards.base_height_jump.weight:                    {values: [-15.0]}
+  env.curriculum.terrain_levels.params.promote_steps:     {values: [3.0]}
+  agent.algorithm.entropy_coef:                           {values: [0.008431]}
+  agent.algorithm.learning_rate:                          {values: [0.001]}
+  env.curriculum.adaptive_reward.params.penalty_budget:   {values: [0.572]}
+  env.curriculum.adaptive_reward.params.g_min:            {values: [0.595]}
+  env.commands.stair_event.y_halfwidth:                   {values: [0.16467576835757058]}
+  env.commands.stair_event.step_threshold:                {values: [0.041511286630781796]}
+  env.commands.stair_event.event_during_time:             {values: [0.4679925632356595]}
+
+  # Fixed recovery protocol; ignored by baseline and one_shot.
+  env.commands.stair_event.rearm_clear_time:              {values: [0.10]}
+  env.commands.stair_event.post_hop_wait:                 {values: [0.35]}
+  env.commands.stair_event.failure_timeout:               {values: [0.90]}
+  env.commands.stair_event.success_height_threshold:      {values: [0.035]}
+  env.commands.stair_event.stuck_speed_threshold:         {values: [0.15]}
+  env.commands.stair_event.retreat_time:                  {values: [0.60]}
+  env.commands.stair_event.runup_min_time:                {values: [0.15]}
+  env.commands.stair_event.runup_timeout:                 {values: [1.50]}

@@ -44,6 +44,12 @@ class StairDetectEventCommand(CommandTerm):
 
     cfg: StairDetectEventCommandCfg
 
+    _IDLE = 0
+    _HOP = 1
+    _WAIT_RESULT = 2
+    _RETREAT = 3
+    _RUNUP = 4
+
     def __init__(self, cfg: StairDetectEventCommandCfg, env: ManagerBasedEnv):
         super().__init__(cfg, env)
         self.env = env
@@ -56,14 +62,34 @@ class StairDetectEventCommand(CommandTerm):
         self.active = torch.zeros(n, dtype=torch.bool, device=self.device)
         self.elapsed = torch.zeros(n, device=self.device)
         self.cooldown_timer = torch.zeros(n, device=self.device)
+        self.state = torch.zeros(n, dtype=torch.long, device=self.device)
+        self.state_timer = torch.zeros(n, device=self.device)
+        self.clear_timer = torch.zeros(n, device=self.device)
+        self.armed = torch.ones(n, dtype=torch.bool, device=self.device)
+        self.takeoff_ground_z = torch.zeros(n, device=self.device)
+        self.ground_gain = torch.zeros(n, device=self.device)
 
         self.metrics["detected"] = torch.zeros(n, device=self.device)
         self.metrics["active"] = torch.zeros(n, device=self.device)
         self.metrics["step_ahead"] = torch.zeros(n, device=self.device)
+        self.metrics["phase"] = torch.zeros(n, device=self.device)
+        self.metrics["attempt_started"] = torch.zeros(n, device=self.device)
+        self.metrics["attempt_failed"] = torch.zeros(n, device=self.device)
+        self.metrics["recovery_active"] = torch.zeros(n, device=self.device)
+        self.metrics["runup_active"] = torch.zeros(n, device=self.device)
+        self.metrics["forward_speed"] = torch.zeros(n, device=self.device)
+        self.metrics["ground_gain"] = torch.zeros(n, device=self.device)
+
+        if self.cfg.trigger_mode not in {"baseline", "one_shot", "recovery_runup"}:
+            raise ValueError(
+                "StairDetectEventCommand.trigger_mode must be one of "
+                f"['baseline', 'one_shot', 'recovery_runup'], got {self.cfg.trigger_mode!r}"
+            )
 
     def __str__(self) -> str:
         return (
             "StairDetectEventCommand:\n"
+            f"\ttrigger_mode: {self.cfg.trigger_mode}\n"
             f"\tstep_threshold: {self.cfg.step_threshold}\n"
             f"\tevent_during_time: {self.cfg.event_during_time}\n"
         )
@@ -125,6 +151,196 @@ class StairDetectEventCommand(CommandTerm):
         self.active[env_ids] = False
         self.elapsed[env_ids] = 0.0
         self.cooldown_timer[env_ids] = 0.0
+        self.state[env_ids] = self._IDLE
+        self.state_timer[env_ids] = 0.0
+        self.clear_timer[env_ids] = 0.0
+        self.armed[env_ids] = True
+        self.takeoff_ground_z[env_ids] = 0.0
+        self.ground_gain[env_ids] = 0.0
+
+    def _ground_height(self) -> torch.Tensor:
+        """Mean finite ground height under the base, per environment."""
+        hits = self.near_sensor.data.ray_hits_w[:, :, 2]
+        finite = torch.isfinite(hits)
+        return (hits * finite).sum(dim=1) / finite.sum(dim=1).clamp(min=1)
+
+    def _update_baseline(self, detected: torch.Tensor, commanded: torch.Tensor, dt: float):
+        """Original level-triggered behavior, retained as the exact ablation baseline."""
+        can_start = (~self.active) & (self.cooldown_timer <= 0.0) & detected & commanded
+        self.active = self.active | can_start
+        self.elapsed = torch.where(can_start, torch.zeros_like(self.elapsed), self.elapsed)
+
+        self.elapsed = torch.where(self.active, self.elapsed + dt, self.elapsed)
+        closing = self.active & (self.elapsed >= self.cfg.event_during_time)
+        self.active = self.active & (~closing)
+        self.cooldown_timer = torch.where(
+            closing,
+            torch.full_like(self.cooldown_timer, self.cfg.cooldown),
+            self.cooldown_timer,
+        )
+        self.cooldown_timer = torch.where(
+            ~self.active,
+            (self.cooldown_timer - dt).clamp(min=0.0),
+            self.cooldown_timer,
+        )
+        self.state = torch.where(
+            self.active,
+            torch.full_like(self.state, self._HOP),
+            torch.full_like(self.state, self._IDLE),
+        )
+        return can_start, torch.zeros_like(can_start)
+
+    def _update_one_shot(self, detected: torch.Tensor, commanded: torch.Tensor, dt: float):
+        """One trigger per detection encounter; re-arm only after the step clears."""
+        eligible_clear = (~detected) & (~self.active)
+        self.clear_timer = torch.where(
+            eligible_clear, self.clear_timer + dt, torch.zeros_like(self.clear_timer)
+        )
+        self.armed |= self.clear_timer >= self.cfg.rearm_clear_time
+
+        can_start = (
+            (~self.active)
+            & self.armed
+            & (self.cooldown_timer <= 0.0)
+            & detected
+            & commanded
+        )
+        self.armed = self.armed & (~can_start)
+        self.active = self.active | can_start
+        self.elapsed = torch.where(can_start, torch.zeros_like(self.elapsed), self.elapsed)
+
+        self.elapsed = torch.where(self.active, self.elapsed + dt, self.elapsed)
+        closing = self.active & (self.elapsed >= self.cfg.event_during_time)
+        self.active = self.active & (~closing)
+        self.cooldown_timer = torch.where(
+            closing,
+            torch.full_like(self.cooldown_timer, self.cfg.cooldown),
+            self.cooldown_timer,
+        )
+        self.cooldown_timer = torch.where(
+            ~self.active,
+            (self.cooldown_timer - dt).clamp(min=0.0),
+            self.cooldown_timer,
+        )
+        self.state = torch.where(
+            self.active,
+            torch.full_like(self.state, self._HOP),
+            torch.full_like(self.state, self._IDLE),
+        )
+        return can_start, torch.zeros_like(can_start)
+
+    def _update_recovery_runup(
+        self,
+        detected: torch.Tensor,
+        commanded: torch.Tensor,
+        ground_z: torch.Tensor,
+        forward_speed: torch.Tensor,
+        dt: float,
+    ):
+        """Attempt-aware hop with failed-attempt retreat and accelerated re-approach."""
+        # A cleared detector re-arms the next physical encounter. This prevents the same
+        # continuously visible riser from opening repeated hop windows.
+        eligible_clear = (~detected) & (self.state != self._HOP) & (
+            self.state != self._WAIT_RESULT
+        )
+        self.clear_timer = torch.where(
+            eligible_clear, self.clear_timer + dt, torch.zeros_like(self.clear_timer)
+        )
+        self.armed |= self.clear_timer >= self.cfg.rearm_clear_time
+        self.cooldown_timer = (self.cooldown_timer - dt).clamp(min=0.0)
+        self.state_timer = torch.where(
+            self.state != self._IDLE, self.state_timer + dt, self.state_timer
+        )
+
+        idle_start = (
+            (self.state == self._IDLE)
+            & self.armed
+            & (self.cooldown_timer <= 0.0)
+            & detected
+            & commanded
+        )
+        runup_start = (
+            (self.state == self._RUNUP)
+            & self.armed
+            & (self.cooldown_timer <= 0.0)
+            & (self.state_timer >= self.cfg.runup_min_time)
+            & detected
+            & commanded
+        )
+        can_start = idle_start | runup_start
+        self.state = torch.where(
+            can_start, torch.full_like(self.state, self._HOP), self.state
+        )
+        self.state_timer = torch.where(can_start, torch.zeros_like(self.state_timer), self.state_timer)
+        self.elapsed = torch.where(can_start, torch.zeros_like(self.elapsed), self.elapsed)
+        self.takeoff_ground_z = torch.where(can_start, ground_z, self.takeoff_ground_z)
+        self.ground_gain = torch.where(can_start, torch.zeros_like(self.ground_gain), self.ground_gain)
+        self.armed = self.armed & (~can_start)
+
+        hopping = self.state == self._HOP
+        self.elapsed = torch.where(hopping, self.elapsed + dt, self.elapsed)
+        closing = hopping & (self.elapsed >= self.cfg.event_during_time)
+        self.state = torch.where(
+            closing, torch.full_like(self.state, self._WAIT_RESULT), self.state
+        )
+        self.state_timer = torch.where(closing, torch.zeros_like(self.state_timer), self.state_timer)
+        self.cooldown_timer = torch.where(
+            closing,
+            torch.full_like(self.cooldown_timer, self.cfg.cooldown),
+            self.cooldown_timer,
+        )
+
+        self.ground_gain = torch.where(
+            self.state == self._WAIT_RESULT,
+            ground_z - self.takeoff_ground_z,
+            self.ground_gain,
+        )
+        waiting = self.state == self._WAIT_RESULT
+        success = waiting & (self.ground_gain >= self.cfg.success_height_threshold)
+        ready_to_judge = waiting & (self.state_timer >= self.cfg.post_hop_wait)
+        stuck = (
+            ready_to_judge
+            & detected
+            & (forward_speed < self.cfg.stuck_speed_threshold)
+        )
+        timed_out = waiting & (self.state_timer >= self.cfg.failure_timeout)
+        failed = (~success) & (stuck | timed_out)
+        cleared_without_stall = ready_to_judge & (~detected) & (~success)
+
+        go_idle = success | cleared_without_stall
+        self.state = torch.where(
+            go_idle, torch.full_like(self.state, self._IDLE), self.state
+        )
+        self.state_timer = torch.where(go_idle, torch.zeros_like(self.state_timer), self.state_timer)
+        self.state = torch.where(
+            failed, torch.full_like(self.state, self._RETREAT), self.state
+        )
+        self.state_timer = torch.where(failed, torch.zeros_like(self.state_timer), self.state_timer)
+
+        retreat_done = (self.state == self._RETREAT) & (
+            self.state_timer >= self.cfg.retreat_time
+        )
+        self.state = torch.where(
+            retreat_done, torch.full_like(self.state, self._RUNUP), self.state
+        )
+        self.state_timer = torch.where(
+            retreat_done, torch.zeros_like(self.state_timer), self.state_timer
+        )
+
+        # If the robot failed to re-encounter the riser, retreat and try the approach again
+        # instead of remaining in an unbounded run-up state.
+        runup_timeout = (self.state == self._RUNUP) & (
+            self.state_timer >= self.cfg.runup_timeout
+        )
+        self.state = torch.where(
+            runup_timeout, torch.full_like(self.state, self._RETREAT), self.state
+        )
+        self.state_timer = torch.where(
+            runup_timeout, torch.zeros_like(self.state_timer), self.state_timer
+        )
+
+        self.active = self.state == self._HOP
+        return can_start, failed
 
     def _update_command(self):
         dt = self._env.step_dt
@@ -137,34 +353,59 @@ class StairDetectEventCommand(CommandTerm):
         # the operator's forward command is the same signal on the real robot.
         vel_cmd_xy = self._env.command_manager.get_command(self.cfg.vel_command_name)[:, :2]
         commanded = torch.norm(vel_cmd_xy, dim=1) > self.cfg.min_cmd_speed
+        ground_z = self._ground_height()
+        forward_speed = self.robot.data.root_lin_vel_b[:, 0]
 
-        # rising edge: open a hop window when a step appears, we're commanded to move,
-        # and we're idle + off cooldown. An already-open window is NOT aborted if the
-        # command drops (the in-flight hop completes).
-        can_start = (~self.active) & (self.cooldown_timer <= 0.0) & detected & commanded
-        self.active = self.active | can_start
-        self.elapsed = torch.where(can_start, torch.zeros_like(self.elapsed), self.elapsed)
-
-        # advance the open window; close it after event_during_time and start cooldown
-        self.elapsed = torch.where(self.active, self.elapsed + dt, self.elapsed)
-        closing = self.active & (self.elapsed >= self.cfg.event_during_time)
-        self.active = self.active & (~closing)
-        self.cooldown_timer = torch.where(closing, torch.full_like(self.cooldown_timer, self.cfg.cooldown), self.cooldown_timer)
-        # tick cooldown down while idle
-        self.cooldown_timer = torch.where(~self.active, (self.cooldown_timer - dt).clamp(min=0.0), self.cooldown_timer)
+        if self.cfg.trigger_mode == "baseline":
+            can_start, failed = self._update_baseline(detected, commanded, dt)
+        elif self.cfg.trigger_mode == "one_shot":
+            can_start, failed = self._update_one_shot(detected, commanded, dt)
+        else:
+            can_start, failed = self._update_recovery_runup(
+                detected, commanded, ground_z, forward_speed, dt
+            )
 
         self.event_command[:, 0] = self.active.float()
         self.event_command[:, 1] = self.elapsed * self.active.float()
+        # Preserve the two-channel observation used by sweep012. Negative elapsed values
+        # encode recovery phases without changing the policy input dimension:
+        #   -1 = retreat, -2 = run-up.
+        self.event_command[:, 1] = torch.where(
+            self.state == self._RETREAT,
+            torch.full_like(self.elapsed, -1.0),
+            self.event_command[:, 1],
+        )
+        self.event_command[:, 1] = torch.where(
+            self.state == self._RUNUP,
+            torch.full_like(self.elapsed, -2.0),
+            self.event_command[:, 1],
+        )
 
         # cache for metrics
         self._last_detected = detected.float()
         self._last_step_ahead = step_ahead
+        self._last_attempt_started = can_start.float()
+        self._last_attempt_failed = failed.float()
+        self._last_forward_speed = forward_speed
 
     def _update_metrics(self):
         if hasattr(self, "_last_detected"):
             self.metrics["detected"][:] = self._last_detected
             self.metrics["step_ahead"][:] = self._last_step_ahead
         self.metrics["active"][:] = self.active.float()
+        self.metrics["phase"][:] = self.state.float()
+        self.metrics["attempt_started"][:] = getattr(
+            self, "_last_attempt_started", torch.zeros_like(self.elapsed)
+        )
+        self.metrics["attempt_failed"][:] = getattr(
+            self, "_last_attempt_failed", torch.zeros_like(self.elapsed)
+        )
+        self.metrics["recovery_active"][:] = (self.state == self._RETREAT).float()
+        self.metrics["runup_active"][:] = (self.state == self._RUNUP).float()
+        self.metrics["forward_speed"][:] = getattr(
+            self, "_last_forward_speed", torch.zeros_like(self.elapsed)
+        )
+        self.metrics["ground_gain"][:] = self.ground_gain
 
     # -- debug visualization
 
@@ -227,6 +468,11 @@ class StairDetectEventCommandCfg(CommandTermCfg):
     min_cmd_speed: float = 0.05
     """Minimum |xy velocity command| [m/s] required to open a hop window (0 command -> no hop)."""
 
+    trigger_mode: str = "baseline"
+    """Attempt logic: ``baseline`` keeps the original level trigger, ``one_shot`` requires
+    the detector to clear before re-arming, and ``recovery_runup`` adds a failed-attempt
+    retreat and accelerated re-approach. All modes keep the same two-channel observation."""
+
     step_threshold: float = 0.03
     """Minimum forward-minus-near terrain height [m] that triggers a hop."""
 
@@ -241,6 +487,30 @@ class StairDetectEventCommandCfg(CommandTermCfg):
 
     cooldown: float = 0.3
     """Idle time [s] required after a hop before the next one can start."""
+
+    rearm_clear_time: float = 0.10
+    """How long the detector must remain clear before a one-shot attempt re-arms."""
+
+    post_hop_wait: float = 0.35
+    """Time [s] after the hop window closes before judging a failed attempt."""
+
+    failure_timeout: float = 0.90
+    """Maximum result-wait time [s] before an unsuccessful attempt enters retreat."""
+
+    success_height_threshold: float = 0.035
+    """Minimum under-base ground-height increase [m] that marks the attempt successful."""
+
+    stuck_speed_threshold: float = 0.15
+    """Forward root speed [m/s] below which a still-visible riser is considered a stall."""
+
+    retreat_time: float = 0.60
+    """Duration [s] of the rewarded backward retreat after a failed attempt."""
+
+    runup_min_time: float = 0.15
+    """Minimum acceleration time [s] before a run-up may trigger the next hop."""
+
+    runup_timeout: float = 1.50
+    """Maximum run-up time [s] before returning to retreat and trying again."""
 
     active_visualizer_cfg: VisualizationMarkersCfg = _GREEN
     inactive_visualizer_cfg: VisualizationMarkersCfg = _RED

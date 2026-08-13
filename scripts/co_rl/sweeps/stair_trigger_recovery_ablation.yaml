@@ -1,0 +1,67 @@
+# Controlled 3-way continuation from the same 5000-iteration sweep012 policy.
+#
+# Every trial loads model_4999.pt from sweep012 and trains for 5000 additional iterations,
+# so each final policy has ~10000 stair-task iterations on its lineage:
+#   sweep000 = original level-trigger baseline
+#   sweep001 = one trigger per physical stair encounter
+#   sweep002 = one-shot trigger + failed-attempt retreat/run-up recovery
+#
+# The event observation remains two-dimensional in every condition. Recovery phases are
+# encoded in the existing elapsed-time channel, so all three trials can warm-start the exact
+# same actor, critic, and observation normalizer without a shape mismatch.
+#
+# Run:
+#   nohup python scripts/co_rl/sweep.py \
+#     --config scripts/co_rl/sweeps/stair_trigger_recovery_ablation.yaml \
+#     > trigger_recovery_ablation.out 2>&1 &
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Jump-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Jump
+max_iterations: 5000
+
+method: grid
+seed: 47
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "8192"
+  - "--adaptive_reward"
+  - "--warmstart_ckpt"
+  - "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Rough_Stair_Jump/ppo/2026-07-18_07-11-27_sweep012/model_4999.pt"
+
+metric:
+  tag_contains: terrain_level
+  reduce: final_mean
+  tail_frac: 0.2
+  goal: max
+
+parameters:
+  # The only experimental factor.
+  env.commands.stair_event.trigger_mode:
+    values: ["baseline", "one_shot", "recovery_runup"]
+
+  # Exact sweep012 reward, PPO, adaptive-balancer, and detector settings.
+  env.rewards.stair_climb.weight:                       {values: [23.5]}
+  env.rewards.stair_climb.params.growth:                {values: [2.5251]}
+  env.rewards.jump_lin_vel_z.weight:                    {values: [4.3904]}
+  env.rewards.base_height_jump.weight:                  {values: [-15.0]}
+  env.curriculum.terrain_levels.params.promote_steps:   {values: [3.0]}
+  agent.algorithm.entropy_coef:                         {values: [0.008431]}
+  agent.algorithm.learning_rate:                        {values: [0.001]}
+  env.curriculum.adaptive_reward.params.penalty_budget: {values: [0.572]}
+  env.curriculum.adaptive_reward.params.g_min:          {values: [0.595]}
+  env.commands.stair_event.y_halfwidth:                 {values: [0.16467576835757058]}
+  env.commands.stair_event.step_threshold:              {values: [0.041511286630781796]}
+  env.commands.stair_event.event_during_time:           {values: [0.4679925632356595]}
+
+  # Fixed recovery protocol; ignored by baseline and one_shot.
+  env.commands.stair_event.rearm_clear_time:            {values: [0.10]}
+  env.commands.stair_event.post_hop_wait:               {values: [0.35]}
+  env.commands.stair_event.failure_timeout:             {values: [0.90]}
+  env.commands.stair_event.success_height_threshold:    {values: [0.035]}
+  env.commands.stair_event.stuck_speed_threshold:       {values: [0.15]}
+  env.commands.stair_event.retreat_time:                {values: [0.60]}
+  env.commands.stair_event.runup_min_time:              {values: [0.15]}
+  env.commands.stair_event.runup_timeout:               {values: [1.50]}

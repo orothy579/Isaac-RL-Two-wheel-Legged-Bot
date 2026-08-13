@@ -43,6 +43,12 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=True, help="Run in real-time, if possible.")
+parser.add_argument(
+    "--export_only",
+    action="store_true",
+    default=False,
+    help="Export the loaded policy to JIT/ONNX and exit without entering the simulation loop.",
+)
 
 parser.add_argument("--num_policy_stacks", type=int, default=2, help="Number of policy stacks.")
 parser.add_argument("--num_critic_stacks", type=int, default=2, help="Number of critic stacks.")
@@ -209,6 +215,11 @@ def main():
     
     # export environment to pdf
     export_env_as_pdf(yaml_path=os.path.join(log_dir, "params", "env.yaml"), pdf_path=os.path.join(export_model_dir, "env.pdf"))
+
+    if args_cli.export_only:
+        print(f"[INFO]: Export complete. Files written to: {export_model_dir}")
+        env.close()
+        return
 
 
     # reset environment

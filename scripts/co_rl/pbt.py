@@ -119,7 +119,7 @@ def main():
         members = []
         for i in range(n_pop):
             params = dict(center) if i == 0 else perturb(center, evolve, rng, factor)
-            members.append({"params": params, "ckpt": cfg["init_ckpt"], "metric": None})
+            members.append({"params": params, "ckpt": cfg["init_ckpt"], "metric": None, "done": False})
         state = {"generation": 0, "members": members}
         with open(os.path.join(results_dir, "pbt_state.json"), "w") as f:
             json.dump(state, f, indent=2)
@@ -132,9 +132,20 @@ def main():
     if new_hist:
         writer.writerow(["generation", "member", "metric", "status", "ckpt", "log_dir", "params"])
 
+    state_path = os.path.join(results_dir, "pbt_state.json")
+
+    def save_state():
+        with open(state_path, "w") as f:
+            json.dump(state, f, indent=2)
+
     for gen in range(state["generation"], n_gen):
-        # -- train every member for one generation
+        # -- train every member for one generation (skip members already done THIS
+        # generation, e.g. after a crash mid-generation resumed via --results_dir).
         for i, m in enumerate(state["members"]):
+            if m.get("done"):
+                print(f"[pbt] g{gen} m{i}: already done this generation "
+                      f"(metric={m['metric']:.3f}) — skipping", flush=True)
+                continue
             res = run_member(gen, i, m["params"], m["ckpt"], cfg, results_dir, args.python)
             if res["status"].startswith("train_exit") or res["status"] == "no_log_dir":
                 print(f"[pbt] ABORTED at g{gen} m{i}: training didn't start "
@@ -145,26 +156,34 @@ def main():
             if res["ckpt"]:  # keep training this member from its new checkpoint next gen
                 m["ckpt"] = res["ckpt"]
             m["metric"] = res["metric"]
+            m["done"] = True
+            save_state()  # persist after EVERY member so a crash loses at most one run
             writer.writerow([gen, i, res["metric"], res["status"], res["ckpt"],
                              res["log_dir"], json.dumps(m["params"])])
             hist.flush()
             print(f"[pbt] g{gen} m{i}: metric={res['metric']:.3f} status={res['status']}", flush=True)
 
-        # -- exploit + explore
-        ranked = sorted(range(n_pop), key=lambda i: state["members"][i]["metric"], reverse=True)
-        top, bottom = ranked[:n_exploit], ranked[-n_exploit:]
-        for b in bottom:
-            src = state["members"][rng.choice(top)]
-            print(f"[pbt] g{gen}: member {b} exploits {ranked[:n_exploit]} "
-                  f"(copies ckpt+params of a top member, then perturbs)")
-            state["members"][b] = {
-                "params": perturb(src["params"], evolve, rng, factor),
-                "ckpt": src["ckpt"],
-                "metric": None,
-            }
+        # -- exploit + explore (only if there IS a next generation to run it for; on the
+        # last generation this would just mutate the final population pointlessly and
+        # risks overwriting a top member if it happens to rank in the bottom slice of a
+        # later spurious pass).
+        if gen < n_gen - 1:
+            ranked = sorted(range(n_pop), key=lambda i: state["members"][i]["metric"], reverse=True)
+            top, bottom = ranked[:n_exploit], ranked[-n_exploit:]
+            for b in bottom:
+                src = state["members"][rng.choice(top)]
+                print(f"[pbt] g{gen}: member {b} exploits {ranked[:n_exploit]} "
+                      f"(copies ckpt+params of a top member, then perturbs)")
+                state["members"][b] = {
+                    "params": perturb(src["params"], evolve, rng, factor),
+                    "ckpt": src["ckpt"],
+                    "metric": None,
+                    "done": False,
+                }
+            for m in state["members"]:  # every member (survivors incl.) retrains next gen
+                m["done"] = False
         state["generation"] = gen + 1
-        with open(os.path.join(results_dir, "pbt_state.json"), "w") as f:
-            json.dump(state, f, indent=2)
+        save_state()
 
     hist.close()
     best = max(state["members"], key=lambda m: (m["metric"] if m["metric"] is not None else -1e9))
