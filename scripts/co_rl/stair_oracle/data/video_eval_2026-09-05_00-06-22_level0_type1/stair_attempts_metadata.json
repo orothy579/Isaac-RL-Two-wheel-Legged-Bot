@@ -1,0 +1,39 @@
+{
+  "purpose": "training-only oracle diagnostics; not an actor observation or reward",
+  "csv": "stair_attempts.csv",
+  "training_log_dir": "/home/lch/Isaac-RL-Two-wheel-Legged-Bot/logs/co_rl/Flamingo_Light_Rough_Stair_Jump/ppo/2026-09-04_17-30-43_warmstart_flat1300_resume800_lrfix_curriculum_oracle_5k",
+  "tracked_env_count": 1,
+  "tracked_env_ids": [
+    0
+  ],
+  "step_height_range_m": [
+    0.05,
+    0.15
+  ],
+  "step_width_range_m": [
+    0.5,
+    0.3
+  ],
+  "tile_size_m": 10.0,
+  "terrain_border_width_m": 1.0,
+  "platform_width_m": 5.0,
+  "result_wait_time_s": 0.4,
+  "success_height_threshold_m": 0.035,
+  "success_min_step_fraction": 0.8,
+  "landing_max_abs_roll_rad": 0.5,
+  "landing_max_abs_pitch_rad": 0.7,
+  "joint_order": [
+    "left_shoulder_joint",
+    "right_shoulder_joint",
+    "left_wheel_joint",
+    "right_wheel_joint"
+  ],
+  "action_order": [
+    "left_shoulder",
+    "right_shoulder",
+    "left_wheel",
+    "right_wheel"
+  ],
+  "success_definition": "ground gain >= max(success_height_threshold, actual step height * min step fraction) AND both wheels contact AND final roll/pitch within limits",
+  "contact_impulse_note": "sum(norm(net normal wheel contact force) * environment step_dt)"
+}

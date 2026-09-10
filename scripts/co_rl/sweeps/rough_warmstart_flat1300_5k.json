@@ -1,0 +1,8 @@
+{
+  "agent.algorithm.learning_rate": 0.001,
+  "agent.algorithm.entropy_coef": 0.008431,
+  "env.commands.stair_event.trigger_mode": "one_shot",
+  "env.commands.stair_event.y_halfwidth": 0.16467576835757058,
+  "env.commands.stair_event.step_threshold": 0.041511286630781796,
+  "env.commands.stair_event.event_during_time": 0.4679925632356595
+}

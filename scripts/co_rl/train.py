@@ -27,12 +27,15 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument("--experiment_description", type=str, default=None, help="Description of the experiment.")
 parser.add_argument("--num_policy_stacks", type=int, default=2, help="Number of policy stacks.")
 parser.add_argument("--num_critic_stacks", type=int, default=2, help="Number of critic stacks.")
+parser.add_argument("--batch_exit", action="store_true", help="Flush completed headless batch results and exit without native Kit teardown.")
 
 # append CO-RL cli arguments
 cli_args.add_co_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.batch_exit and (not args_cli.headless or args_cli.video):
+    parser.error("--batch_exit requires --headless without --video")
 
 # always enable cameras to record video
 if args_cli.video:
@@ -222,6 +225,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg | Man
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
+    # Give the optional stair-attempt diagnostic collector the exact run directory
+    # before the environment (and therefore its command terms) is constructed. This
+    # only configures logging; it does not add policy observations or change rewards.
+    commands_cfg = getattr(env_cfg, "commands", None)
+    stair_event_cfg = getattr(commands_cfg, "stair_event", None)
+    if stair_event_cfg is not None and getattr(stair_event_cfg, "diagnostics_enabled", False):
+        archive_root = stair_event_cfg.diagnostics_archive_root
+        if not os.path.isabs(archive_root):
+            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            archive_root = os.path.join(repo_root, archive_root)
+        stair_event_cfg.diagnostics_output_dir = os.path.join(archive_root, os.path.basename(log_dir))
+        stair_event_cfg.diagnostics_training_log_dir = log_dir
     # This way, the Ray Tune workflow can extract experiment name.
     print(f"Exact experiment name requested from command line: {log_dir}")
     # create isaac environment
@@ -284,6 +299,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg | Man
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+
+    if args_cli.batch_exit:
+        # Dedicated, externally supervised batch worker; all output must be
+        # finalized before bypassing the occasionally hanging native teardown.
+        import json
+        if runner.writer is not None:
+            runner.writer.flush()
+            runner.writer.close()
+        if stair_event_cfg is not None and getattr(stair_event_cfg, "diagnostics_enabled", False):
+            env.unwrapped.command_manager.get_term("stair_event").diagnostics.close()
+        with open(os.path.join(log_dir, "batch_complete.json"), "w") as stream:
+            json.dump({"last_iteration": runner.current_learning_iteration,
+                       "iterations_requested": agent_cfg.max_iterations,
+                       "checkpoint": f"model_{runner.current_learning_iteration}.pt"}, stream)
+        print(f"[BATCH] Results flushed: {log_dir}", flush=True)
+        sys.stderr.flush()
+        os._exit(0)
 
     # close the simulator
     env.close()

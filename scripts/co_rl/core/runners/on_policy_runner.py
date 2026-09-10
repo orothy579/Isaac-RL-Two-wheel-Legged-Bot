@@ -497,6 +497,12 @@ class OnPolicyRunner:
             self.critic_obs_normalizer.load_state_dict(loaded_dict["critic_obs_norm_state_dict"])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            # Adam restores its per-group LR, but PPO's adaptive-KL scheduler keeps
+            # a separate scalar. Without synchronizing it, the first resumed update
+            # starts scheduling from the config LR (often 100x larger) and can
+            # destroy an otherwise healthy policy.
+            if self.alg.optimizer.param_groups:
+                self.alg.learning_rate = float(self.alg.optimizer.param_groups[0]["lr"])
         if self.lagrangian_tuner is not None and "lagrangian_state" in loaded_dict:
             self.lagrangian_tuner.load_state_dict(loaded_dict["lagrangian_state"])
         self.current_learning_iteration = loaded_dict["iter"]

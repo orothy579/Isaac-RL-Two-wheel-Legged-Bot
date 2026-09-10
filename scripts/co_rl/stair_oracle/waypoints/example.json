@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "editable_jump_seed_NOT_a_validated_demonstration",
+  "duration_s": 10.0,
+  "scene": {"height_m": 0.15, "tread_m": 0.30, "width_m": 2.0, "distance_m": 0.6, "yaw_deg": 0, "initial_base_z_m": 0.30, "initial_vx_mps": 0.0, "friction": 0.8},
+  "waypoints": [
+    {"t": 0.0, "label": "approach", "shoulder_rad": [-0.6, -0.6], "wheel_rad_s": [0, 0], "feedforward_nm": [0, 0, 0, 0], "base_reference": [-0.6, 0.30, 0]},
+    {"t": 0.5, "label": "drive", "shoulder_rad": [-0.6, -0.6], "wheel_rad_s": [8, 8], "feedforward_nm": [0, 0, 0, 0], "base_reference": [-0.4, 0.30, 0]},
+    {"t": 0.85, "label": "crouch", "shoulder_rad": [-0.72, -0.72], "wheel_rad_s": [10, 10], "feedforward_nm": [0, 0, 0, 0], "base_reference": [-0.25, 0.24, 0.1]},
+    {"t": 1.02, "label": "push", "shoulder_rad": [-0.15, -0.15], "wheel_rad_s": [12, 12], "feedforward_nm": [0, 0, 0, 0], "base_reference": [-0.15, 0.35, 0]},
+    {"t": 1.22, "label": "tuck", "shoulder_rad": [-0.72, -0.72], "wheel_rad_s": [5, 5], "feedforward_nm": [0, 0, 0, 0], "base_reference": [0.05, 0.52, 0]},
+    {"t": 1.48, "label": "land", "shoulder_rad": [-0.6, -0.6], "wheel_rad_s": [0, 0], "feedforward_nm": [0, 0, 0, 0], "base_reference": [0.15, 0.45, 0]},
+    {"t": 3.0, "label": "hold", "shoulder_rad": [-0.6, -0.6], "wheel_rad_s": [0, 0], "feedforward_nm": [0, 0, 0, 0], "base_reference": [0.15, 0.45, 0]}
+  ]
+}

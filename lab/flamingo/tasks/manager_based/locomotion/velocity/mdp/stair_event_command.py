@@ -35,6 +35,8 @@ from isaaclab.sensors import RayCaster
 from isaaclab.utils import configclass
 from isaaclab.utils.math import euler_xyz_from_quat
 
+from .stair_attempt_diagnostics import StairAttemptDiagnostics
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
@@ -56,6 +58,7 @@ class StairDetectEventCommand(CommandTerm):
         self.robot: Articulation = env.scene[cfg.asset_name]
         self.sensor: RayCaster = env.scene.sensors[cfg.sensor_name]
         self.near_sensor: RayCaster = env.scene.sensors[cfg.near_sensor_name]
+        self.diagnostics = StairAttemptDiagnostics(cfg, env, self.robot, self.near_sensor)
 
         n = self.num_envs
         self.event_command = torch.zeros(n, 2, dtype=torch.float32, device=self.device)
@@ -79,6 +82,10 @@ class StairDetectEventCommand(CommandTerm):
         self.metrics["runup_active"] = torch.zeros(n, device=self.device)
         self.metrics["forward_speed"] = torch.zeros(n, device=self.device)
         self.metrics["ground_gain"] = torch.zeros(n, device=self.device)
+        self.metrics["diagnostic_completed"] = torch.zeros(n, device=self.device)
+        self.metrics["diagnostic_success"] = torch.zeros(n, device=self.device)
+        self.metrics["diagnostic_start_distance"] = torch.zeros(n, device=self.device)
+        self.metrics["diagnostic_alignment_abs_deg"] = torch.zeros(n, device=self.device)
 
         if self.cfg.trigger_mode not in {"baseline", "one_shot", "recovery_runup"}:
             raise ValueError(
@@ -147,6 +154,7 @@ class StairDetectEventCommand(CommandTerm):
     # -- CommandTerm interface
 
     def _resample_command(self, env_ids: Sequence[int]):
+        self.diagnostics.reset(env_ids)
         self.event_command[env_ids] = 0.0
         self.active[env_ids] = False
         self.elapsed[env_ids] = 0.0
@@ -365,6 +373,10 @@ class StairDetectEventCommand(CommandTerm):
                 detected, commanded, ground_z, forward_speed, dt
             )
 
+        # Training-only logger. It observes the event boundary and simulator state but
+        # cannot alter the command, policy observation, reward, action, or termination.
+        self.diagnostics.update(can_start, ground_z, step_ahead, dt)
+
         self.event_command[:, 0] = self.active.float()
         self.event_command[:, 1] = self.elapsed * self.active.float()
         # Preserve the two-channel observation used by sweep012. Negative elapsed values
@@ -406,6 +418,12 @@ class StairDetectEventCommand(CommandTerm):
             self, "_last_forward_speed", torch.zeros_like(self.elapsed)
         )
         self.metrics["ground_gain"][:] = self.ground_gain
+        self.metrics["diagnostic_completed"][:] = self.diagnostics.completed_pulse
+        self.metrics["diagnostic_success"][:] = self.diagnostics.success_pulse
+        self.metrics["diagnostic_start_distance"][:] = self.diagnostics.start_distance_pulse
+        self.metrics["diagnostic_alignment_abs_deg"][:] = (
+            self.diagnostics.start_alignment_abs_deg_pulse
+        )
 
     # -- debug visualization
 
@@ -511,6 +529,52 @@ class StairDetectEventCommandCfg(CommandTermCfg):
 
     runup_timeout: float = 1.50
     """Maximum run-up time [s] before returning to retreat and trying again."""
+
+    diagnostics_enabled: bool = False
+    """Enable the training-only per-attempt oracle diagnostic collector."""
+
+    diagnostics_output_dir: str | None = None
+    """Run directory supplied by the trainer. ``None`` keeps diagnostics inactive."""
+
+    diagnostics_archive_root: str = "scripts/co_rl/stair_oracle/data"
+    """Repository-relative root used to organize oracle datasets by training run."""
+
+    diagnostics_training_log_dir: str | None = None
+    """Associated RL log directory, written into metadata for traceability."""
+
+    diagnostics_csv_name: str = "stair_attempts.csv"
+    diagnostics_metadata_name: str = "stair_attempts_metadata.json"
+    diagnostics_max_envs: int = 256
+    """Number of environments sampled uniformly across the vectorized batch."""
+
+    diagnostics_step_height_range: tuple[float, float] = (0.05, 0.15)
+    diagnostics_step_width_range: tuple[float, float] = (0.50, 0.30)
+    """Start/target dimensions coupled to the terrain difficulty."""
+
+    diagnostics_tile_size: float = 10.0
+    diagnostics_terrain_border_width: float = 1.0
+    diagnostics_platform_width: float = 5.0
+    diagnostics_max_stair_steps: int = 16
+    """Geometry values used to recover exact per-tile oracle riser locations."""
+
+    diagnostics_result_wait_time: float = 0.4
+    """Time [s] after the hop window used to observe climb and landing."""
+
+    diagnostics_success_min_step_fraction: float = 0.8
+    """Minimum fraction of the actual riser height required for an oracle success."""
+
+    diagnostics_flush_interval_steps: int = 8
+    """CSV flush cadence in environment steps; bounds CUDA synchronization cost."""
+
+    diagnostics_landing_max_abs_roll: float = 0.5
+    diagnostics_landing_max_abs_pitch: float = 0.7
+    """Final attitude limits [rad] used only for the diagnostic success label."""
+
+    diagnostics_contact_sensor_name: str = "contact_forces"
+    diagnostics_wheel_body_names: tuple[str, str] = (
+        "left_wheel_link",
+        "right_wheel_link",
+    )
 
     active_visualizer_cfg: VisualizationMarkersCfg = _GREEN
     inactive_visualizer_cfg: VisualizationMarkersCfg = _RED

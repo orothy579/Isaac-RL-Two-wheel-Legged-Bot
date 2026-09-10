@@ -1,0 +1,52 @@
+--- a/lab/flamingo/tasks/manager_based/locomotion/velocity/mdp/stair_event_command.py
++++ b/lab/flamingo/tasks/manager_based/locomotion/velocity/mdp/stair_event_command.py
+@@ -59,6 +59,16 @@
+         self.sensor: RayCaster = env.scene.sensors[cfg.sensor_name]
+         self.near_sensor: RayCaster = env.scene.sensors[cfg.near_sensor_name]
+         self.diagnostics = StairAttemptDiagnostics(cfg, env, self.robot, self.near_sensor)
++        approach_mode = getattr(cfg, "approach_mode", "off")
++        if approach_mode not in {"off", "shadow", "gate"}:
++            raise ValueError("approach_mode must be off, shadow, or gate")
++        self.approach_estimator = None
++        if approach_mode != "off":
++            from scripts.co_rl.staged_retrain.approach_proposal import ScanApproach
++            self.approach_estimator = ScanApproach(self.sensor.cfg, self.device)
++            for metric in ("approach_valid", "approach_distance_m", "approach_angle_rad",
++                           "approach_ttc_s", "approach_eligible"):
++                self.metrics[metric] = torch.zeros(self.num_envs, device=self.device)
+ 
+         n = self.num_envs
+         self.event_command = torch.zeros(n, 2, dtype=torch.float32, device=self.device)
+@@ -363,6 +373,22 @@
+         commanded = torch.norm(vel_cmd_xy, dim=1) > self.cfg.min_cmd_speed
+         ground_z = self._ground_height()
+         forward_speed = self.robot.data.root_lin_vel_b[:, 0]
++        if self.approach_estimator is not None:
++            from scripts.co_rl.staged_retrain.approach_proposal import timing_eligible
++            approach = self.approach_estimator.estimate(
++                self.sensor.data, self.near_sensor.data.ray_hits_w[..., 2]
++            )
++            eligible, ttc = timing_eligible(
++                approach, self.robot.data.root_lin_vel_b[:, :2], vel_cmd_xy[:, 0]
++            )
++            self.metrics["approach_valid"][:] = approach["valid"].float()
++            self.metrics["approach_distance_m"][:] = approach["distance_m"]
++            self.metrics["approach_angle_rad"][:] = approach["angle_rad"]
++            self.metrics["approach_ttc_s"][:] = ttc
++            self.metrics["approach_eligible"][:] = eligible.float()
++            # Shadow records only. Gate restricts starts, preserving active hops.
++            if self.cfg.approach_mode == "gate":
++                commanded = commanded & eligible
+ 
+         if self.cfg.trigger_mode == "baseline":
+             can_start, failed = self._update_baseline(detected, commanded, dt)
+@@ -486,6 +512,9 @@
+     min_cmd_speed: float = 0.05
+     """Minimum |xy velocity command| [m/s] required to open a hop window (0 command -> no hop)."""
+ 
++    approach_mode: str = "off"
++    """off: unchanged; shadow: log estimates; gate: restrict new hop starts. Opt-in."""
++
+     trigger_mode: str = "baseline"
+     """Attempt logic: ``baseline`` keeps the original level trigger, ``one_shot`` requires
+     the detector to clear before re-arming, and ``recovery_runup`` adds a failed-attempt

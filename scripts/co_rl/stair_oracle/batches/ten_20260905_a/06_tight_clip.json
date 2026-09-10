@@ -1,0 +1,18 @@
+{
+  "agent.algorithm.learning_rate": 0.001,
+  "agent.algorithm.entropy_coef": 0.008431,
+  "env.commands.stair_event.trigger_mode": "one_shot",
+  "env.commands.stair_event.y_halfwidth": 0.16467576835757058,
+  "env.commands.stair_event.step_threshold": 0.041511286630781796,
+  "env.commands.stair_event.event_during_time": 0.4679925632356595,
+  "env.commands.base_velocity.ranges.lin_vel_x": [
+    -0.8,
+    0.8
+  ],
+  "env.commands.base_velocity.ranges.ang_vel_z": [
+    -0.6,
+    0.6
+  ],
+  "agent.save_interval": 100,
+  "agent.algorithm.clip_param": 0.1
+}

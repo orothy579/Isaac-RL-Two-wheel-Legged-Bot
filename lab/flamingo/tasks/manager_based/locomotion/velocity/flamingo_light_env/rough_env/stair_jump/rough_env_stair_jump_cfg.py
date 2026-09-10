@@ -52,8 +52,14 @@ from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rou
     FlamingoRewardsCfg as StandDriveRewardsCfg,
 )
 from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stair_jump.stair_terrain_cfg import (
+    PLATFORM_WIDTH,
     STAIR_TERRAINS_CFG,
+    STEP_HEIGHT_MAX,
+    STEP_HEIGHT_MIN,
     STEP_HEIGHT,
+    STEP_WIDTH_RANGE,
+    SUBTERRAIN_BORDER_WIDTH,
+    TILE_SIZE,
 )
 
 
@@ -70,6 +76,12 @@ class FlamingoStairJumpCommandsCfg(CommandsCfg):
         y_halfwidth=0.2,
         event_during_time=0.5,  # known-good jump window (bfbca92)
         cooldown=0.25,
+        diagnostics_enabled=True,
+        diagnostics_step_height_range=(STEP_HEIGHT_MIN, STEP_HEIGHT_MAX),
+        diagnostics_step_width_range=STEP_WIDTH_RANGE,
+        diagnostics_tile_size=TILE_SIZE,
+        diagnostics_terrain_border_width=SUBTERRAIN_BORDER_WIDTH,
+        diagnostics_platform_width=PLATFORM_WIDTH,
         debug_vis=True,
     )
 
@@ -191,7 +203,7 @@ def _setup_stair_jump(cfg) -> None:
     cfg.scene.terrain.max_init_terrain_level = 0  # everyone begins at the shallowest step
     cfg.curriculum.terrain_levels = CurrTerm(
         func=mdp.stair_terrain_levels_climb,
-        params={"reward_term_name": "stair_climb", "promote_steps": 5.0, "demote_steps": 1.0},
+        params={"reward_term_name": "stair_climb", "promote_steps": 1.0, "demote_steps": 1.0},
     )
     # log-only: mean height climbed per episode in nominal 5 cm units (Curriculum/climb_units).
     # Meaningful even when terrain_levels is disabled (e.g. fixed-height capability probes).
@@ -336,6 +348,9 @@ def _setup_stair_jump(cfg) -> None:
     if cfg.scene.height_scanner is not None:
         cfg.scene.height_scanner.update_period = cfg.decimation * cfg.sim.dt
 
+
+    from ...default_height_map import use_default_height_map
+    use_default_height_map(cfg)
 
 @configclass
 class FlamingoRoughEnvCfg(StandDriveRoughEnvCfg):

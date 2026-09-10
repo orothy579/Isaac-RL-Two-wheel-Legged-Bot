@@ -1,0 +1,30 @@
+{
+  "agent.resume": false,
+  "agent.max_iterations": 1000,
+  "agent.save_interval": 100,
+  "agent.num_steps_per_env": 24,
+  "agent.algorithm.learning_rate": 0.001,
+  "agent.algorithm.schedule": "adaptive",
+  "agent.algorithm.entropy_coef": 0.01,
+  "agent.algorithm.clip_param": 0.2,
+  "agent.algorithm.desired_kl": 0.01,
+  "agent.algorithm.gamma": 0.99,
+  "agent.algorithm.lam": 0.95,
+  "agent.algorithm.num_learning_epochs": 5,
+  "agent.algorithm.num_mini_batches": 4,
+  "env.commands.base_velocity.ranges.lin_vel_x": [
+    -0.8,
+    0.8
+  ],
+  "env.commands.base_velocity.ranges.lin_vel_y": [
+    0.0,
+    0.0
+  ],
+  "env.commands.base_velocity.ranges.ang_vel_z": [
+    -0.6,
+    0.6
+  ],
+  "env.commands.base_velocity.heading_command": false,
+  "env.commands.base_velocity.rel_heading_envs": 0.0,
+  "env.seed": 42
+}

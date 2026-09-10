@@ -18,6 +18,7 @@ from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.vel
 )
 
 from lab.flamingo.assets.flamingo.flamingo_light_v1 import FLAMINGO_CFG  # isort: skip
+from ...default_height_map import use_default_height_map
 
 class FlamingoLightdofcommandsCfg(CommandsCfg):
     event = mdp.EventCommandCfg(
@@ -223,6 +224,8 @@ class FlamingoFlatEnvCfg(LocomotionVelocityFlatEnvCfg):
             "left_leg_link",
             "right_leg_link",
         ]
+
+        use_default_height_map(self)
 
 @configclass
 class FlamingoFlatEnvCfg_PLAY(FlamingoFlatEnvCfg):
