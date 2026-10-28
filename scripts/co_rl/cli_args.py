@@ -37,6 +37,21 @@ def add_co_rl_args(parser: argparse.ArgumentParser):
         "weights and matching obs normalizer, then trains fresh. Use for cross-task transfer where obs "
         "dims differ (e.g. flat-drive -> rough). Ignored when --resume is set.",
     )
+    arg_group.add_argument(
+        "--warmstart_widen",
+        action="store_true",
+        default=False,
+        help="With --warmstart_ckpt: when an input layer GREW because observations were appended at the end "
+        "(e.g. stand_drive -> stair_step critic), copy the checkpoint columns and zero-init the new ones "
+        "instead of re-initializing the whole layer.",
+    )
+    arg_group.add_argument(
+        "--warmstart_std_scale",
+        type=float,
+        default=None,
+        help="With --warmstart_ckpt: start from the checkpoint's per-action noise std times this factor "
+        "(default: re-initialize every action's std to init_noise_std).",
+    )
     # -- reward autotuning arguments
     arg_group.add_argument(
         "--adaptive_reward",

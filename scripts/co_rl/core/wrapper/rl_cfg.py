@@ -90,6 +90,13 @@ class CoRlPpoAlgorithmCfg:
     max_grad_norm: float = MISSING
     """The maximum gradient norm."""
 
+    max_std: float = 3.0
+    """Upper bound of the (state-independent) action std, applied after every PPO step."""
+
+    mirror_loss_coef: float = 0.0
+    """Weight of the left-right mirror loss ``|mu(M_o(o)) - M_a(mu(o))|^2`` (0 = off). Needs the
+    runner's ``mirror_fn``."""
+
 
 @configclass
 class CoRlSrmPpoAlgorithmCfg:
@@ -192,6 +199,10 @@ class CoRlPolicyRunnerCfg:
 
     reward_clip: float | None = None
     """Optional symmetric per-step reward bound used before return computation."""
+
+    mirror_fn: str | None = None
+    """``"module:function"`` building ``(mirror_obs, mirror_actions)`` from the wrapped env, for the
+    PPO mirror loss (``algorithm.mirror_loss_coef``)."""
 
     policy: CoRlPpoActorCriticCfg = MISSING
     """The policy configuration."""

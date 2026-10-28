@@ -57,6 +57,17 @@ class FlamingoLightFlatPPORunnerCfg_Stand_Drive(FlamingoPPORunnerCfg):
 
 
 @configclass
+class FlamingoLightV0122FlatPPORunnerCfg_Stand_Drive(FlamingoPPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+
+        self.max_iterations = 1500
+        self.experiment_name = "Flamingo_Light_v01_2_2_Flat_Stand_Drive"
+        self.policy.actor_hidden_dims = [512, 256, 128]
+        self.policy.critic_hidden_dims = [512, 256, 128]
+
+
+@configclass
 class FlamingoLightFlatPPORunnerCfg_Jump(FlamingoPPORunnerCfg):
     def __post_init__(self):
         super().__post_init__()
@@ -87,6 +98,63 @@ class FlamingoLightRoughPPORunnerCfg_Stair(FlamingoPPORunnerCfg):
         self.experiment_name = "Flamingo_Light_Rough_Stair"
         self.policy.actor_hidden_dims = [512, 256, 128]
         self.policy.critic_hidden_dims = [512, 256, 128]
+
+
+@configclass
+class FlamingoLightRoughPPORunnerCfg_StairStep(FlamingoPPORunnerCfg):
+    """Alternating-feet (ZMP) stair climbing on v01_2_2, warm-started from its flat stand-drive."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        self.max_iterations = 5000
+        self.experiment_name = "Flamingo_Light_Rough_Stair_Step"
+        self.policy.actor_hidden_dims = [512, 256, 128]
+        self.policy.critic_hidden_dims = [512, 256, 128]
+        # the warm start keeps the actor but not its (converged, ~0.06) action std: start with
+        # enough leg exploration to find a step without wrecking the inherited balance
+        # (0.4 in the first pilot: 11 % flight time and 32 % tip-overs from noise alone)
+        self.policy.init_noise_std = 0.25
+        # sweep v1 used 0.01 (pilot 2: 0.005 let the std collapse 0.25 -> 0.13 before any step was
+        # found, but that was before the no-progress termination). With 0.01 every v1 trial pushed
+        # the LEFT shoulder std to the 3.0 clamp of ppo.py (random +-3 rad targets: the leg flails at
+        # its joint limits) and three of four runs died of a NaN physics blow-up.
+        # v2: 0.005, and the std is capped at 0.4 (shoulder range is 0.75 rad, wheel action 1 = 40 rad/s).
+        self.algorithm.entropy_coef = 0.005
+        self.algorithm.max_std = 0.4
+        # actions past +-1 have no physical meaning (shoulder range [-0.75, 0] rad, wheel 40 rad/s):
+        # bound them (and NaN-sanitize) at the env boundary; PPO keeps the unclipped samples
+        self.action_clip = 1.0
+        # warm start: the first PPO update at 1e-3 broke the transferred policy (KL so large that the
+        # adaptive schedule fell to its 1e-5 floor at once; the perceptive pilot never recovered).
+        # Start low and let the adaptive schedule raise it.
+        self.algorithm.learning_rate = 1.0e-4
+
+
+@configclass
+class FlamingoLightRoughPPORunnerCfg_StairStepLift(FlamingoLightRoughPPORunnerCfg_StairStep):
+    """Sweep v3 (risers above the wheel radius, a step-up only pays when the leg lifted the wheel):
+    the v2 PPO settings, logged under their own experiment."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "Flamingo_Light_Rough_Stair_Step_Lift"
+
+
+@configclass
+class FlamingoLightRoughPPORunnerCfg_StairStepLiftMirror(FlamingoLightRoughPPORunnerCfg_StairStepLift):
+    """Stair-Step-Lift + left-right mirror loss. Sweep v3 trial 3 started EVERY staircase with the
+    right wheel (256 of 256 first steps); approaching with the left wheel ahead it stalled. The
+    rewards are symmetric, so the mirror loss transfers the right-first first step to the left."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "Flamingo_Light_Rough_Stair_Step_Lift_Mirror"
+        self.mirror_fn = (
+            "lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stair_step."
+            "symmetry:stair_step_policy_mirror"
+        )
+        self.algorithm.mirror_loss_coef = 1.0
 
 
 @configclass

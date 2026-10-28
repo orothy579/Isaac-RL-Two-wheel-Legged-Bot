@@ -1,0 +1,62 @@
+# Alternating-feet stair climbing on flamingo_light v01_2_2 - sweep v3: the LEG must lift the wheel.
+#
+# What sweeps v1/v2 (stair_step_zmp_l4*.yaml) learned, from the recorded traces:
+#   * perceptive trials: one shoulder pinned at its limit for the whole climb, only the other leg
+#     lifts; the pinned side's wheel is thrown over the riser edge by running into it at 0.8-1.3 m/s
+#     (command 0.35). Below the 7.6 cm wheel radius (the 5-7 cm rows where the curriculum keeps
+#     most envs) a pushed wheel rolls over the edge, and the old step detector (vertical force
+#     only) counted that as a clean swing, with the alternation bonus on top.
+#   * blind v2 trial 1: both legs lift, but it pirouettes up the stairs (~5 rad/s, a half turn
+#     about the stance wheel per step).
+# v3 task (Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift[-Perceptive]-v1-ppo):
+#   * risers 9 -> 15 cm (all above the axle: rolling over is impossible)
+#   * zmp_gait.step_rule = "lift": a step-up (its alternation bonus, the curriculum's step count)
+#     needs no contact at all during the swing, the swing leg retracted >= 4 cm relative to the
+#     stance leg (body frame), and a landing on a tread (>= 70 % vertical force)
+#   * + swing_leg_retraction (pull the pending swing leg up in front of a riser), forward speed
+#     above command + 0.15 m/s and yaw rate above 0.5 rad/s penalized
+#   * every ZMP term of v1/v2 unchanged
+#
+# 2 x 2 full factorial (4 x 5000 iterations, 4096 envs):
+#   A  policy observation : blind (deployable on the camera-less v01_2_2) | perceptive (+ wheel-area scan)
+#   B  warm start         : v01_2_2 flat stand-drive (fresh) | the sweep-v2 policy of the same observation
+#
+# Run (systemd user unit, survives the session / 2 h background limit):
+#   systemd-run --user --unit=flamingo-stairstep-sweep-v3 --working-directory=$PWD /bin/bash -c \
+#     'exec ./run_gb10.sh -u scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_step_lift_v3.yaml \
+#      --python ./run_gb10.sh > logs/co_rl/_runlogs/sweep_stair_step_lift_v3.log 2>&1'
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Step_Lift
+max_iterations: 5000
+method: list
+parallel: 4
+seed: 42
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "4096"
+  - "--batch_exit"
+  - "--warmstart_widen"
+  - "--warmstart_std_scale"
+  - "1.5"
+  - "--warmstart_ckpt"
+  - "logs/co_rl/Flamingo_Light_v01_2_2_Flat_Stand_Drive/ppo/2026-10-23_11-56-03_v0122_stand_drive/model_1499.pt"
+
+metric:
+  tag_contains: Curriculum/terrain_levels
+  reduce: final_mean
+  tail_frac: 0.2
+  goal: max
+
+# ZMP model / shaping: fixed (see trials). v2 warm starts: blind <- v2 trial 1 (the only blind v2 policy
+# that lifts both legs), perceptive <- v2 trial 2 (best strict lifted_share on the 9.3 cm rows)
+trials:
+  - {task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-v1-ppo, env.zmp_gait.zmp_model: cart_table}
+  - {task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-v1-ppo, env.zmp_gait.zmp_model: cart_table,
+     warmstart_ckpt: logs/co_rl/Flamingo_Light_Rough_Stair_Step/ppo/2026-10-26_13-16-48_sweep001/model_4999.pt}
+  - {task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Perceptive-v1-ppo, env.zmp_gait.zmp_model: cart_table}
+  - {task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Perceptive-v1-ppo, env.zmp_gait.zmp_model: cart_table,
+     warmstart_ckpt: logs/co_rl/Flamingo_Light_Rough_Stair_Step/ppo/2026-10-26_13-16-48_sweep002/model_4999.pt}

@@ -1,0 +1,62 @@
+# Alternating-feet (one wheel at a time) stair climbing on flamingo_light v01_2_2 — ZMP reward sweep, v2.
+#
+# v2 = v1 (stair_step_zmp_l4.yaml, same L4 design) after fixing what v1 revealed, all in the task /
+# agent config (nothing to pass here): every v1 trial drove the LEFT shoulder action std to the 3.0
+# clamp (random +-3 rad targets, the leg flailing at its limits) and three of four died of a NaN
+# physics blow-up. Now entropy 0.01 -> 0.005, std capped at 0.4 (algorithm.max_std), actions bounded
+# at +-1 at the env boundary (action_clip), and envs with a non-finite robot state are reset.
+#
+# 2-level, 3-factor L4 orthogonal array (4 x 5000 iterations, 4096 envs). Every factor is at each
+# level in two trials and balanced against the others, so its main effect is
+#   mean(metric | level 2) - mean(metric | level 1).
+#   A  policy observation : blind (proprioception, deployable on the camera-less v01_2_2)
+#                           | perceptive (+ 72-ray wheel-area height scan)
+#   B  ZMP model          : multibody (Vukobratovic, every link a point mass) | cart_table (Kajita, whole-body CoM)
+#   C  ZMP shaping        : low  = zmp_tracking 1.0 + cop_transfer 1.0
+#                           | high = zmp_tracking 3.0 + cop_transfer 3.0
+# Fixed: step_up 10 per clean step-up (+10 when the wheels alternate), the rest = task defaults.
+#
+# Warm start: the v01_2_2 flat stand-drive policy (1500 it, 4096 envs) with
+#   --warmstart_widen      critic keeps its 203 stand-drive inputs, the 13 ZMP/gait inputs (and the
+#                          72 scan inputs of the perceptive actor) start at zero weight
+#   --warmstart_std_scale  start from the stand-drive action std x1.5 (shoulder ~0.08, wheel ~0.28)
+#
+# Run (systemd user unit, survives the session / 2 h background limit):
+#   systemd-run --user --unit=flamingo-stairstep-sweep-v2 --working-directory=$PWD /bin/bash -c \
+#     'exec ./run_gb10.sh -u scripts/co_rl/sweep.py --config scripts/co_rl/sweeps/stair_step_zmp_l4_v2.yaml \
+#      --python ./run_gb10.sh > logs/co_rl/_runlogs/sweep_stair_step_zmp_l4_v2.log 2>&1'
+
+task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-v1-ppo
+algo: ppo
+experiment_name: Flamingo_Light_Rough_Stair_Step
+max_iterations: 5000
+method: list
+parallel: 4                   # all four trainings at once (the GPU is otherwise idle)
+seed: 42
+
+base_args:
+  - "--headless"
+  - "--num_envs"
+  - "4096"
+  - "--batch_exit"
+  - "--warmstart_widen"
+  - "--warmstart_std_scale"
+  - "1.5"
+  - "--warmstart_ckpt"
+  - "logs/co_rl/Flamingo_Light_v01_2_2_Flat_Stand_Drive/ppo/2026-10-23_11-56-03_v0122_stand_drive/model_1499.pt"
+
+metric:
+  tag_contains: Curriculum/terrain_levels
+  reduce: final_mean          # mean of the last 20 % of the curve (same protocol as the stair_jump sweeps)
+  tail_frac: 0.2
+  goal: max
+
+trials:
+  - {task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-v1-ppo,
+     env.zmp_gait.zmp_model: multibody,  env.rewards.zmp_tracking.weight: 1.0, env.rewards.cop_transfer.weight: 1.0}
+  - {task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-v1-ppo,
+     env.zmp_gait.zmp_model: cart_table, env.rewards.zmp_tracking.weight: 3.0, env.rewards.cop_transfer.weight: 3.0}
+  - {task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Perceptive-v1-ppo,
+     env.zmp_gait.zmp_model: multibody,  env.rewards.zmp_tracking.weight: 3.0, env.rewards.cop_transfer.weight: 3.0}
+  - {task: Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Perceptive-v1-ppo,
+     env.zmp_gait.zmp_model: cart_table, env.rewards.zmp_tracking.weight: 1.0, env.rewards.cop_transfer.weight: 1.0}

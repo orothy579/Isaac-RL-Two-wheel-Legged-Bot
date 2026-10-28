@@ -12,3 +12,5 @@ mjcf/
 .thumbs/
 *.asset_hash
 configuration/
+*.pdf
+cosim-anaylze/

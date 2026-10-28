@@ -98,6 +98,27 @@ def sample_random(parameters: dict, n: int, rng: random.Random) -> list[dict]:
     return [{name: _sample_one(spec, rng) for name, spec in parameters.items()} for _ in range(n)]
 
 
+def make_trials(cfg: dict, rng: random.Random) -> list[dict]:
+    """Trials for the grid / random / list methods.
+
+    ``list``: explicit trials (e.g. a fractional-factorial design), each ``fixed`` merged with
+    one entry of ``trials``::
+
+        method: list
+        fixed:  {agent.algorithm.learning_rate: 0.001}
+        trials:
+          - {env.rewards.step_up.weight: 10, env.zmp_gait.zmp_model: multibody}
+          - {env.rewards.step_up.weight: 20, env.zmp_gait.zmp_model: cart_table}
+    """
+    method = cfg.get("method", "grid")
+    if method == "list":
+        fixed = dict(cfg.get("fixed") or {})
+        return [{**fixed, **dict(t)} for t in cfg["trials"]]
+    if method == "grid":
+        return expand_grid(cfg["parameters"])
+    return sample_random(cfg["parameters"], int(cfg.get("num_samples", 10)), rng)
+
+
 def suggest_params(trial, parameters: dict) -> dict:
     """Map the SAME YAML parameter spec onto Optuna ``trial.suggest_*`` calls (TPE search)."""
     out = {}
@@ -273,8 +294,17 @@ def run_trial(idx: int, params: dict, cfg: dict, results_dir: str, python: str,
               resume: bool = False) -> dict:
     run_name = f"sweep{idx:03d}"
     override_path = os.path.join(results_dir, f"{run_name}_overrides.json")
+    # a trial may name its own task (e.g. blind vs perceptive variant); it is not a cfg override
+    task = params.get("task", cfg["task"])
+    # ... and its own warm-start checkpoint (replaces the base_args one); not a cfg override either
+    base_args = [str(a) for a in cfg.get("base_args", [])]
+    if params.get("warmstart_ckpt"):
+        if "--warmstart_ckpt" in base_args:
+            base_args[base_args.index("--warmstart_ckpt") + 1] = str(params["warmstart_ckpt"])
+        else:
+            base_args += ["--warmstart_ckpt", str(params["warmstart_ckpt"])]
     with open(override_path, "w") as f:
-        json.dump(params, f, indent=2)
+        json.dump({k: v for k, v in params.items() if k not in ("task", "warmstart_ckpt")}, f, indent=2)
     logfile = os.path.join(results_dir, f"{run_name}.log")
 
     # --- checkpoint resume support ---
@@ -312,8 +342,8 @@ def run_trial(idx: int, params: dict, cfg: dict, results_dir: str, python: str,
         else:
             print(f"[sweep] trial {idx}: no previous run found for resume; starting fresh")
 
-    cmd = build_cmd(python, cfg["task"], cfg.get("algo", "ppo"), run_iterations,
-                    run_name, override_path, cfg.get("base_args", []),
+    cmd = build_cmd(python, task, cfg.get("algo", "ppo"), run_iterations,
+                    run_name, override_path, base_args,
                     resume_run=resume_run, resume_ckpt=resume_ckpt)
     print(f"[sweep] trial {idx}: {params}")
     print(f"[sweep]   $ {' '.join(cmd)}")
@@ -384,8 +414,7 @@ def main():
             print(f"[sweep] dry run — would run {cfg.get('num_samples', 20)} TPE trials.")
         else:
             rng = random.Random(cfg.get("seed", 42))
-            trials = expand_grid(cfg["parameters"]) if method == "grid" \
-                else sample_random(cfg["parameters"], int(cfg.get("num_samples", 10)), rng)
+            trials = make_trials(cfg, rng)
             for i, t in enumerate(trials):
                 print(f"  trial {i:3d}: {t}")
             print(f"[sweep] dry run — {len(trials)} trials would run (~{cfg['max_iterations']} iters each).")
@@ -409,12 +438,11 @@ def main():
     if method == "optuna":
         _run_optuna(cfg, results_dir, args.python, goal, args.seed_from)
         return
-    if method not in ("grid", "random"):
-        raise ValueError(f"method must be 'grid', 'random', or 'optuna', got '{method}'")
+    if method not in ("grid", "random", "list"):
+        raise ValueError(f"method must be 'grid', 'random', 'list', or 'optuna', got '{method}'")
 
     rng = random.Random(cfg.get("seed", 42))
-    trials = expand_grid(cfg["parameters"]) if method == "grid" \
-        else sample_random(cfg["parameters"], int(cfg.get("num_samples", 10)), rng)
+    trials = make_trials(cfg, rng)
     # Grid/random sweeps are sequential and can be interrupted in the middle of a long
     # training run. Preserve already completed rows and resume an incomplete trial from
     # the checkpoint referenced by this exact results directory.
@@ -442,25 +470,46 @@ def main():
                 )
         if completed:
             print(f"[sweep] reusing {len(completed)} completed grid trial(s) from results.csv")
-    try:
-        for i, t in enumerate(trials):
-            if i in completed:
-                rows.append(completed[i])
-                print(f"[sweep] trial {i}: already complete — skipping")
-                continue
+    def _has_checkpoint(i: int) -> bool:
+        previous_log_dir = parse_log_dir(os.path.join(results_dir, f"sweep{i:03d}.log"))
+        return bool(previous_log_dir and os.path.isdir(previous_log_dir)
+                    and _latest_checkpoint(previous_log_dir) is not None)
 
-            trial_log = os.path.join(results_dir, f"sweep{i:03d}.log")
-            previous_log_dir = parse_log_dir(trial_log)
-            has_checkpoint = False
-            if previous_log_dir and os.path.isdir(previous_log_dir):
-                has_checkpoint = _latest_checkpoint(previous_log_dir) is not None
-            rows.append(run_trial(i, t, cfg, results_dir, args.python, resume=has_checkpoint))
-            _write_results(rows, results_dir, goal)  # checkpoint after every trial
-            _mirror_to_run(rows[-1], results_dir)    # also drop results into the run folder's sweep/
-            if rows[-1]["status"].startswith("train_exit") or rows[-1]["status"] == "no_log_dir":
-                print(f"[sweep] ABORTED at trial {i}: training didn't start (status={rows[-1]['status']}). "
-                      "Check the log, fix the environment, then re-run.")
-                break
+    parallel = int(cfg.get("parallel", 1))
+    try:
+        if parallel > 1:
+            # ``parallel`` trials train at the same time (one GPU shared by several processes)
+            import threading
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            lock = threading.Lock()
+            rows.extend(completed[i] for i in sorted(completed))
+            todo = [(i, t) for i, t in enumerate(trials) if i not in completed]
+            print(f"[sweep] running {len(todo)} trial(s), {parallel} at a time")
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {pool.submit(run_trial, i, t, cfg, results_dir, args.python,
+                                       resume=_has_checkpoint(i)): i for i, t in todo}
+                for fut in as_completed(futures):
+                    row = fut.result()
+                    with lock:
+                        rows.append(row)
+                        _write_results(sorted(rows, key=lambda r: r["trial"]), results_dir, goal)
+                        _mirror_to_run(row, results_dir)
+            rows.sort(key=lambda r: r["trial"])
+        else:
+            for i, t in enumerate(trials):
+                if i in completed:
+                    rows.append(completed[i])
+                    print(f"[sweep] trial {i}: already complete — skipping")
+                    continue
+
+                rows.append(run_trial(i, t, cfg, results_dir, args.python, resume=_has_checkpoint(i)))
+                _write_results(rows, results_dir, goal)  # checkpoint after every trial
+                _mirror_to_run(rows[-1], results_dir)    # also drop results into the run folder's sweep/
+                if rows[-1]["status"].startswith("train_exit") or rows[-1]["status"] == "no_log_dir":
+                    print(f"[sweep] ABORTED at trial {i}: training didn't start (status={rows[-1]['status']}). "
+                          "Check the log, fix the environment, then re-run.")
+                    break
     except KeyboardInterrupt:
         print("\n[sweep] interrupted — writing partial results.")
 

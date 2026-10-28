@@ -29,8 +29,15 @@ class PPO:
         schedule="fixed",
         desired_kl=0.01,
         device="cpu",
+        max_std=3.0,
+        mirror_loss_coef=0.0,
     ):
         self.device = device
+        self.max_std = max_std
+        # left-right symmetry: (mirror_obs, mirror_actions), attached by the runner when configured
+        self.mirror_loss_coef = mirror_loss_coef
+        self.mirror = None
+        self.mean_mirror_loss = 0.0
 
         self.desired_kl = desired_kl
         self.schedule = schedule
@@ -107,6 +114,7 @@ class PPO:
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
+        mean_mirror_loss = 0
         successful_updates = 0
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -175,6 +183,15 @@ class PPO:
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
+            # Mirror loss: the policy must do the mirror image of what it does in the mirrored state
+            if self.mirror is not None and self.mirror_loss_coef > 0.0:
+                mirror_obs, mirror_actions = self.mirror
+                mu_mirrored = self.actor_critic.act_inference(mirror_obs(obs_batch))
+                mirror_loss = (mu_mirrored - mirror_actions(mu_batch)).pow(2).mean()
+                loss = loss + self.mirror_loss_coef * mirror_loss
+            else:
+                mirror_loss = torch.zeros((), device=self.device)
+
             # Gradient step
             self.optimizer.zero_grad(set_to_none=True)
             if not torch.isfinite(loss):
@@ -189,15 +206,18 @@ class PPO:
             self.optimizer.step()
             # Keep the Gaussian scale valid even after an unusually large but finite update.
             with torch.no_grad():
-                self.actor_critic.std.clamp_(min=1.0e-4, max=3.0)
+                self.actor_critic.std.clamp_(min=1.0e-4, max=self.max_std)
 
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
+            mean_mirror_loss += mirror_loss.item()
             successful_updates += 1
 
         if successful_updates > 0:
             mean_value_loss /= successful_updates
             mean_surrogate_loss /= successful_updates
+            mean_mirror_loss /= successful_updates
+        self.mean_mirror_loss = mean_mirror_loss
         self.storage.clear()
 
         return mean_value_loss, mean_surrogate_loss

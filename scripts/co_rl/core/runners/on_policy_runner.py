@@ -42,6 +42,12 @@ class OnPolicyRunner:
         ).to(self.device)
         alg_class = eval(self.alg_cfg.pop("class_name"))  # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
+        if self.cfg.get("mirror_fn") and getattr(self.alg, "mirror_loss_coef", 0.0) > 0.0:
+            import importlib
+
+            module_name, fn_name = self.cfg["mirror_fn"].split(":")
+            self.alg.mirror = getattr(importlib.import_module(module_name), fn_name)(self.env)
+            print(f"[INFO] mirror loss {self.alg.mirror_loss_coef} with {self.cfg['mirror_fn']}")
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
@@ -241,6 +247,8 @@ class OnPolicyRunner:
 
         self.writer.add_scalar("Loss/value_function", locs["mean_value_loss"], locs["it"])
         self.writer.add_scalar("Loss/surrogate", locs["mean_surrogate_loss"], locs["it"])
+        if getattr(self.alg, "mirror", None) is not None:
+            self.writer.add_scalar("Loss/mirror", self.alg.mean_mirror_loss, locs["it"])
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
         if locs["action_count"] > 0:
@@ -508,7 +516,7 @@ class OnPolicyRunner:
         self.current_learning_iteration = loaded_dict["iter"]
         return loaded_dict["infos"]
 
-    def load_transfer(self, path, load_optimizer=False):
+    def load_transfer(self, path, load_optimizer=False, widen_inputs=False, std_scale=None):
         """Warm-start (transfer) load that tolerates obs-dim differences.
 
         Unlike :meth:`load` (strict), this copies only the tensors whose name AND
@@ -519,6 +527,14 @@ class OnPolicyRunner:
         learning-iteration counter are reset so training starts fresh on the new
         task. Use this for cross-task transfer (e.g. flat-drive -> rough) where
         the policy matches but the critic obs space differs.
+
+        ``widen_inputs=True`` (``--warmstart_widen``): a 2-D weight whose output size matches
+        but whose input size GREW (observations appended at the end of the vector) keeps the
+        checkpoint columns and gets zero columns for the new inputs, so the network initially
+        computes exactly what the checkpoint did and learns to use the new inputs.
+
+        ``std_scale`` (``--warmstart_std_scale``): start from the checkpoint's per-action noise std
+        times this factor instead of the fresh ``init_noise_std`` for every action.
         """
         self.warmstart_ckpt = path  # recorded into params.json for reproducibility
         loaded_dict = torch.load(path, map_location=self.device)
@@ -531,11 +547,27 @@ class OnPolicyRunner:
             # so the warm-started policy explores the new task instead of inheriting
             # the source model's converged (near-zero) exploration.
             if k == "std":
-                skipped.append(k)
+                if std_scale is not None and k in model_sd and model_sd[k].shape == v.shape:
+                    model_sd[k] = v * float(std_scale)
+                    matched.append(f"{k} (x{std_scale})")
+                else:
+                    skipped.append(k)
                 continue
             if k in model_sd and model_sd[k].shape == v.shape:
                 model_sd[k] = v
                 matched.append(k)
+            elif (
+                widen_inputs
+                and k in model_sd
+                and v.dim() == 2
+                and model_sd[k].dim() == 2
+                and model_sd[k].shape[0] == v.shape[0]
+                and model_sd[k].shape[1] > v.shape[1]
+            ):
+                widened = torch.zeros_like(model_sd[k])
+                widened[:, : v.shape[1]] = v
+                model_sd[k] = widened
+                matched.append(f"{k} (widened {v.shape[1]}->{widened.shape[1]})")
             else:
                 skipped.append(k)
         self.alg.actor_critic.load_state_dict(model_sd)
