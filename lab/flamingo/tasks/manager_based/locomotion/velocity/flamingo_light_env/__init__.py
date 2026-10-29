@@ -180,6 +180,27 @@ gym.register(
     },
 )
 
+# stair_step (sweep-v2 loose step-up rule) + mirror loss: stage 1 of the two-stage symmetric run
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Mirror-Perceptive-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepPerceptiveEnvCfg,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepMirror,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Mirror-Perceptive-Play-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepPerceptiveEnvCfg_PLAY,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepMirror,
+    },
+)
+
 gym.register(
     id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-v1-ppo",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

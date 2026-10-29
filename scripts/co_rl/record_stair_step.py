@@ -39,6 +39,7 @@ parser.add_argument("--trace", default=None, help="save the filmed env's time se
 parser.add_argument("--view", choices=("chase", "side"), default="chase",
                     help="chase: behind-left of the robot; side: from -y (the stair profile for a +x climb)")
 parser.add_argument("--solo", action="store_true", help="hide the other robots (several envs share a tile)")
+parser.add_argument("--num_policy_stacks", type=int, default=2, help="49 for the distilled blind student (50 frames)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -193,6 +194,10 @@ def main():
     cfg.scene.terrain.max_init_terrain_level = 0
     cfg.commands.base_velocity.ranges.lin_vel_x = (args.command, args.command)
     cfg.commands.base_velocity.rel_standing_envs = 0.0
+    # the shared velocity command zeroes itself 0.5 s into an episode and keeps 0 until its first resample
+    # (5-10 s later); a direct _reset_idx does not restart that clock, so before this line only the first
+    # evaluated level of a process ran with a 0 command (and stood in front of the riser)
+    cfg.commands.base_velocity.initial_phase_time = 0.0
     cfg.episode_length_s = args.seconds + 2.0
     cfg.events.reset_base.params["pose_range"] = {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (args.yaw, args.yaw)}
     # no debug markers (height-scan dots, command arrows/spheres) in the video
@@ -212,7 +217,7 @@ def main():
         cfg.viewer.lookat = (0.15, 0.0, 0.05)
     cfg.viewer.resolution = (1280, 720)
     agent = load_cfg_from_registry(args.task, "co_rl_cfg_entry_point")
-    agent.num_policy_stacks = 2
+    agent.num_policy_stacks = args.num_policy_stacks
     agent.num_critic_stacks = 2
     env = CoRlVecEnvWrapper(gym.make(args.task, cfg=cfg, render_mode="rgb_array"), agent)
     runner = OnPolicyRunner(env, agent.to_dict(), log_dir=None, device=agent.device)

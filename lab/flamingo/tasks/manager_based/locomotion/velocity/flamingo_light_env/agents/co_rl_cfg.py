@@ -132,6 +132,22 @@ class FlamingoLightRoughPPORunnerCfg_StairStep(FlamingoPPORunnerCfg):
 
 
 @configclass
+class FlamingoLightRoughPPORunnerCfg_StairStepMirror(FlamingoLightRoughPPORunnerCfg_StairStep):
+    """Sweep-v2 stair_step (loose step-up rule: a wheel rolled or bounced over a riser also counts) +
+    left-right mirror loss: stage 1 of the two-stage symmetric run. A strict-rule run from the flat
+    stand-drive never lifted a wheel in 10000 it; the loose rule is what bootstrapped stepping in v2."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "Flamingo_Light_Rough_Stair_Step_Mirror"
+        self.mirror_fn = (
+            "lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stair_step."
+            "symmetry:stair_step_policy_mirror"
+        )
+        self.algorithm.mirror_loss_coef = 1.0
+
+
+@configclass
 class FlamingoLightRoughPPORunnerCfg_StairStepLift(FlamingoLightRoughPPORunnerCfg_StairStep):
     """Sweep v3 (risers above the wheel radius, a step-up only pays when the leg lifted the wheel):
     the v2 PPO settings, logged under their own experiment."""

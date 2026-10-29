@@ -177,6 +177,10 @@ def _setup_stair_step(cfg) -> None:
     cfg.commands.base_velocity.ranges.heading = (0.0, 0.0)
     cfg.commands.base_velocity.ranges.pos_z = (0.0, 0.0)
     cfg.commands.base_velocity.rel_standing_envs = 0.02
+    # The shared command zeroes vx during its initial phase and keeps 0 until the next resample (5-10 s), so
+    # up to 2026-10-29 every episode started with 5-10 s of a 0 command (stair rewards and the stall
+    # termination are command-gated: the policies learned to drive to the riser and wait there).
+    cfg.commands.base_velocity.initial_phase_time = 0.0
 
     # -- events
     cfg.events.reset_robot_joints.params["position_range"] = (-0.1, 0.1)

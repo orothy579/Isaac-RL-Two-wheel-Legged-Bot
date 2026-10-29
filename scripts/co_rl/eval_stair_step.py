@@ -54,6 +54,10 @@ def main() -> dict:
     env_cfg.scene.terrain.max_init_terrain_level = 0
     env_cfg.commands.base_velocity.ranges.lin_vel_x = (args_cli.command, args_cli.command)
     env_cfg.commands.base_velocity.rel_standing_envs = 0.0
+    # the shared velocity command zeroes itself 0.5 s into an episode and keeps 0 until its first resample
+    # (5-10 s later); a direct _reset_idx does not restart that clock, so before this line only the first
+    # evaluated level of a process ran with a 0 command (and stood in front of the riser)
+    env_cfg.commands.base_velocity.initial_phase_time = 0.0
     env_cfg.episode_length_s = args_cli.seconds + 1.0
     agent_cfg = load_cfg_from_registry(args_cli.task, "co_rl_cfg_entry_point")
     agent_cfg.num_policy_stacks = args_cli.num_policy_stacks
