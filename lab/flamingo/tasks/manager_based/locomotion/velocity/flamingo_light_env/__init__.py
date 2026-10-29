@@ -261,6 +261,88 @@ gym.register(
     },
 )
 
+# Lift-Mirror + potential-based swing retraction reward (no pay for holding a leg up)
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainEnvCfg,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGain,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-Play-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainEnvCfg_PLAY,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGain,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-Perceptive-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainPerceptiveEnvCfg,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGain,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-Perceptive-Play-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainPerceptiveEnvCfg_PLAY,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGain,
+    },
+)
+
+# fresh symmetric start from the flat stand-drive: Lift-Mirror-Gain on risers 5 -> 15 cm
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-LowStart-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainLowStartEnvCfg,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGainLowStart,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-LowStart-Play-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainLowStartEnvCfg_PLAY,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGainLowStart,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-LowStart-Perceptive-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainLowStartPerceptiveEnvCfg,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGainLowStart,
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-LowStart-Perceptive-Play-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainLowStartPerceptiveEnvCfg_PLAY,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGainLowStart,
+    },
+)
+
 ###########################################Track Velocity##############################################
 
 

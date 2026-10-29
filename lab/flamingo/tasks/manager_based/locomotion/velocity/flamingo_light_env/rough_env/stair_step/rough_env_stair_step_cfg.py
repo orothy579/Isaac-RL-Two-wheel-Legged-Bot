@@ -323,3 +323,70 @@ class FlamingoStairStepLiftPerceptiveEnvCfg_PLAY(FlamingoStairStepLiftEnvCfg_PLA
     def __post_init__(self):
         super().__post_init__()
         _add_feet_scan_to_policy(self)
+
+
+# ============================ lift + retraction gain (after the mirror run) ============================
+@configclass
+class StairStepLiftGainRewardsCfg(StairStepLiftRewardsCfg):
+    """The Lift rewards with the potential-based retraction term: the level form paid a policy for
+    standing square to a riser with a leg held up until the stall termination."""
+
+    swing_retraction = RewTerm(func=zmp.swing_leg_retraction_gain, weight=2.0, params={"extra": 0.02})
+
+
+@configclass
+class FlamingoStairStepLiftGainEnvCfg(FlamingoStairStepLiftEnvCfg):
+    rewards: StairStepLiftGainRewardsCfg = StairStepLiftGainRewardsCfg()
+
+
+@configclass
+class FlamingoStairStepLiftGainEnvCfg_PLAY(FlamingoStairStepLiftEnvCfg_PLAY):
+    rewards: StairStepLiftGainRewardsCfg = StairStepLiftGainRewardsCfg()
+
+
+@configclass
+class FlamingoStairStepLiftGainPerceptiveEnvCfg(FlamingoStairStepLiftPerceptiveEnvCfg):
+    rewards: StairStepLiftGainRewardsCfg = StairStepLiftGainRewardsCfg()
+
+
+@configclass
+class FlamingoStairStepLiftGainPerceptiveEnvCfg_PLAY(FlamingoStairStepLiftPerceptiveEnvCfg_PLAY):
+    rewards: StairStepLiftGainRewardsCfg = StairStepLiftGainRewardsCfg()
+
+
+# ============== fresh symmetric start: risers 5 -> 15 cm with the strict (lift) step-up rule ==============
+# Sweep v3's stand-drive warm starts never lifted a wheel onto the 9-15 cm rows in 5000 it (and held a leg
+# up for the level-form retraction reward instead). Here the curriculum starts below the wheel radius,
+# where a 4 cm leg lift already puts the wheel on the tread; rolling over a low riser still pays no
+# step-up and promotes no env (step_rule "lift"), so the policy has to learn the lift before the rows
+# rise above the axle.
+def _setup_low_start(cfg) -> None:
+    cfg.scene.terrain.terrain_generator = STAIR_STEP_TERRAINS_CFG.copy()
+
+
+@configclass
+class FlamingoStairStepLiftGainLowStartEnvCfg(FlamingoStairStepLiftGainEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _setup_low_start(self)
+
+
+@configclass
+class FlamingoStairStepLiftGainLowStartEnvCfg_PLAY(FlamingoStairStepLiftGainEnvCfg_PLAY):
+    def __post_init__(self):
+        super().__post_init__()
+        _setup_low_start(self)
+
+
+@configclass
+class FlamingoStairStepLiftGainLowStartPerceptiveEnvCfg(FlamingoStairStepLiftGainPerceptiveEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _setup_low_start(self)
+
+
+@configclass
+class FlamingoStairStepLiftGainLowStartPerceptiveEnvCfg_PLAY(FlamingoStairStepLiftGainPerceptiveEnvCfg_PLAY):
+    def __post_init__(self):
+        super().__post_init__()
+        _setup_low_start(self)

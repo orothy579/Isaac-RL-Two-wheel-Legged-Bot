@@ -158,6 +158,26 @@ class FlamingoLightRoughPPORunnerCfg_StairStepLiftMirror(FlamingoLightRoughPPORu
 
 
 @configclass
+class FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGain(FlamingoLightRoughPPORunnerCfg_StairStepLiftMirror):
+    """Lift-Mirror with the potential-based swing retraction reward (``...-Lift-Mirror-Gain-...``)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "Flamingo_Light_Rough_Stair_Step_Lift_Mirror_Gain"
+
+
+@configclass
+class FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGainLowStart(FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGain):
+    """Fresh symmetric run from the v01_2_2 flat stand-drive: mirror loss from iteration 0, potential
+    retraction reward, risers 5 -> 15 cm with the strict lift rule (``...-Lift-Mirror-Gain-LowStart-...``)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "Flamingo_Light_Rough_Stair_Step_Lift_Mirror_Gain_LowStart"
+        self.max_iterations = 10000
+
+
+@configclass
 class FlamingoLightRoughPPORunnerCfg_StairJump(FlamingoPPORunnerCfg):
     def __post_init__(self):
         super().__post_init__()

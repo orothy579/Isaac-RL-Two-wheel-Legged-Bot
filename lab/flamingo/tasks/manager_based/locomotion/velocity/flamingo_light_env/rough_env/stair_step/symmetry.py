@@ -64,15 +64,21 @@ def _group_map(env, group: str, extra: dict) -> tuple[list[int], list[float]]:
     return perm, sign
 
 
-def stair_step_policy_mirror(wrapped_env):
-    """``(mirror_obs, mirror_actions)`` for the co_rl-wrapped stair-step env (blind or perceptive)."""
-    env = wrapped_env.unwrapped
+def policy_mirror_maps(env, frames: int, feet_scan: bool):
+    """``(mirror_obs, mirror_actions)`` for a policy input of ``frames`` stacked ``stack_policy`` frames
+    (newest first) followed by ``none_stack_policy``, with or without its trailing ``feet_scan`` term
+    (the blind student of :mod:`scripts.co_rl.distill_stair_step` drops the scan of the perceptive env)."""
     extra = {}
-    if "feet_scan" in env.observation_manager.active_terms["none_stack_policy"]:
+    terms = env.observation_manager.active_terms["none_stack_policy"]
+    if "feet_scan" in terms:
         extra["feet_scan"] = _scan_rule(env, "feet_scanner")
     frame_perm, frame_sign = _group_map(env, "stack_policy", extra)
     rest_perm, rest_sign = _group_map(env, "none_stack_policy", extra)
-    frames = wrapped_env.num_policy_stacks + 1
+    if "feet_scan" in terms and not feet_scan:
+        if terms[-1] != "feet_scan":
+            raise ValueError("feet_scan must be the last none_stack_policy term to drop it")
+        keep = len(rest_perm) - env.observation_manager.group_obs_term_dim["none_stack_policy"][-1][0]
+        rest_perm, rest_sign = rest_perm[:keep], rest_sign[:keep]
     fdim = len(frame_perm)
     perm, sign = [], []
     for k in range(frames):
@@ -94,3 +100,9 @@ def stair_step_policy_mirror(wrapped_env):
         return actions[..., act_index]
 
     return mirror_obs, mirror_actions
+
+
+def stair_step_policy_mirror(wrapped_env):
+    """``(mirror_obs, mirror_actions)`` for the co_rl-wrapped stair-step env (blind or perceptive)."""
+    env = wrapped_env.unwrapped
+    return policy_mirror_maps(env, wrapped_env.num_policy_stacks + 1, feet_scan=True)

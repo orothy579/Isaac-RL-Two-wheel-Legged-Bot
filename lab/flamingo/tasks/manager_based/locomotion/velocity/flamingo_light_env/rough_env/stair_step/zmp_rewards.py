@@ -672,6 +672,24 @@ def swing_leg_retraction(env: ManagerBasedRLEnv, extra: float = 0.02) -> torch.T
     return value * active.float()
 
 
+def swing_leg_retraction_gain(env: ManagerBasedRLEnv, extra: float = 0.02) -> torch.Tensor:
+    """Potential-based form of :func:`swing_leg_retraction`: pays the INCREASE of the lift fraction
+    (per second, so the episode sum is ``Phi(end) - Phi(start)``, times the weight).
+
+    The level form paid every step the leg was held up: the Lift-Mirror policy stood square to a
+    9.3 cm riser with the left leg lifted ~10 cm (0.88 of the maximum) until the 4 s stall
+    termination, which earned more than that termination cost. Holding the leg up now earns
+    nothing; lifting and lowering again nets zero, so the optimal policy is unchanged.
+    """
+    value = swing_leg_retraction(env, extra)
+    prev = getattr(env, "_swing_retraction_prev", None)
+    if prev is None:
+        prev = value.clone()
+    prev = torch.where(env.episode_length_buf <= 1, value, prev)
+    env._swing_retraction_prev = value.clone()
+    return (value - prev) / env.step_dt
+
+
 def forward_speed_excess_l2(
     env: ManagerBasedRLEnv, command_name: str = "base_velocity", margin: float = 0.15
 ) -> torch.Tensor:
