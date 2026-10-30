@@ -14,4 +14,4 @@ mjcf/
 configuration/
 *.pdf
 cosim-anaylze/
-docs/
+.out
