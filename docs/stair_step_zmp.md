@@ -485,3 +485,23 @@ critic은 teacher 것을 복사했다. 4096 env, 1500 it, teacher 개입 비율 
 - 2026-10-29 18:57 시작 (unit `flamingo-two-stage`, log `logs/co_rl/_runlogs/two_stage.log`).
 - stage 1은 명령 수정(§8.1) 전 설정으로 시작했다. stage 1 연장과 stage 2는 새 프로세스라 수정된 설정(처음부터 명령)으로 돈다.
 - 끝나면 Codex의 `flamingo-h200-after-current`가 이 폴더와 stage 2 checkpoint를 H200으로 옮겨 이어 학습한다.
+
+**결과** (stage 1: 3000 it, 마지막 200 it 평균 1.42단/에피소드라 연장 없음. stage 2: 2026-10-29 21:53 – 10-30 02:04).
+256 env, 수정된 평가, 1단 이상 오른 env / 오른 단 평균:
+
+| checkpoint | 9.3 cm | 11.3 cm | 13.3 cm | 15 cm |
+|---|---|---|---|---|
+| Gain model_2999 | 63.7 % / 5.09 | 59.8 % / 4.95 | 47.3 % / 3.75 | 3.5 % / 0.13 |
+| two-stage stage 2 model_1000 | 80.9 % / 5.03 | 72.7 % / 4.58 | 82.8 % / 4.50 | 48.4 % / 1.66 |
+| two-stage stage 2 model_2000 | 79.3 % / 5.03 | 85.9 % / 5.80 | 80.1 % / 5.09 | 54.7 % / 2.83 |
+| two-stage stage 2 model_3000 | 89.8 % / 5.93 | 88.7 % / 6.11 | 84.4 % / 5.85 | 71.1 % / 4.09 |
+| two-stage stage 2 model_4000 | 90.6 % / 5.80 | 90.6 % / 6.22 | 91.4 % / 6.18 | 79.7 % / 4.27 |
+| **two-stage stage 2 model_4999** | **87.9 % / 6.09** | **94.1 % / 6.96** | **93.4 % / 6.68** | **83.6 % / 5.04** |
+
+- 최고 모델: `logs/co_rl/Flamingo_Light_Rough_Stair_Step_Lift_Mirror_Gain/ppo/2026-10-29_21-53-24_two_stage_s2/model_4999.pt`.
+  H200 큐의 Gain 학습도 이 checkpoint에서 시작한다.
+- model_4999는 좌우를 고르게 들고 (15 cm에서 4.87 / 4.72), 교대 비율은 0.94–0.96, 들어 올린 step-up 비율은 0.90–0.94다.
+- 15 cm에서 Gain 2999(3.5 %)와 차이가 가장 크다.
+- 원인은 둘 중 무엇인지 아직 나누지 못했다.
+  1. stage 2부터 명령 버그를 고쳤다 (에피소드 전체에서 오르기 보상).
+  2. 계보가 다르다: 평지 주행에서 mirror loss를 켠 채 느슨한 판정 → 엄격 판정.

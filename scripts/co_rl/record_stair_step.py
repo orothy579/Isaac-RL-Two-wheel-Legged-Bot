@@ -9,12 +9,15 @@
 
 ``--pick_best`` (with ``--yaw_spread``): first roll out every env once (deterministic policy, spawn
 yaws spread over [-spread, spread]), then roll out again from the same spawn poses and film the env
-that climbed the most in the first pass. ``--trace`` also saves that env's time series (npz + png).
+that climbed the most in the first pass. ``--pick_fail`` films instead an env that did not climb the
+first riser, ending the most common way among those. ``--trace`` also saves that env's time series
+(npz + png).
 """
 
 import argparse
 import os
 import sys
+from collections import Counter
 
 from isaaclab.app import AppLauncher
 
@@ -25,6 +28,9 @@ parser.add_argument("--level", type=int, default=0)
 parser.add_argument("--yaw", type=float, default=0.5)
 parser.add_argument("--yaw_spread", type=float, default=None, help="spawn yaws linspace(-s, s, num_envs)")
 parser.add_argument("--pick_best", action="store_true", help="film the env that climbed most in a first pass")
+parser.add_argument("--pick_fail", action="store_true",
+                    help="film an env that did not climb the first riser in a first pass (the most common failure end); "
+                         "re-film another one (up to --retries times) if the filmed rollout climbs after all")
 parser.add_argument("--retries", type=int, default=4,
                     help="with --pick_best: GPU physics is not repeatable and success is all-or-nothing, so if the "
                          "filmed env climbs less than half of its first-pass risers, film the next best (this many times)")
@@ -231,7 +237,8 @@ def main():
         yaws = torch.full((base.num_envs,), args.yaw, device=base.device)
     with torch.inference_mode():
         candidates, target = [0], 0.0
-        if args.pick_best:
+        pick = args.pick_best or args.pick_fail
+        if pick:
             climb, ups, end_step, reason, _, _ = rollout(env, policy, spawn(env, yaws), steps)
             risers = climb / max(_riser(base), 1e-6)
             for j in range(base.num_envs):
@@ -242,6 +249,13 @@ def main():
             climbers = [int(j) for j in order if float(risers[j]) >= 0.9]
             if args.retry_until is not None and climbers:
                 candidates = [climbers[k % len(climbers)] for k in range(1 + max(args.retries, 0))]
+            if args.pick_fail:
+                fails = [j for j in range(base.num_envs) if float(risers[j]) < 0.9]
+                ends = Counter(reason[j] for j in fails).most_common()
+                print(f"[pass1] {len(fails)} envs below the first riser, ends {ends}", flush=True)
+                rank = {r: k for k, (r, _) in enumerate(ends)}
+                fails.sort(key=lambda j: rank[reason[j]])
+                candidates = fails[: 1 + max(args.retries, 0)] or candidates
             print(f"[pass1] film env {candidates[0]}: risers {float(risers[candidates[0]]):.2f}, "
                   f"step-ups {int(ups[candidates[0]])}; >=1 riser {float((risers >= 0.9).float().mean()):.2f} of envs",
                   flush=True)
@@ -252,13 +266,16 @@ def main():
                 _hide_other_robots(base, follow)
             out = rollout(env, policy, spawn(env, yaws), steps, follow=follow)
             got = float(out[0][follow]) / max(_riser(base), 1e-6)
-            if best is None or got > best[0]:
+            if best is None or (got < best[0] if args.pick_fail else got > best[0]):
                 best = (got, follow, out)
-            if not args.pick_best:
+            if not pick:
                 break
             want = float(risers[follow])
             print(f"[film] attempt {attempt}: env {follow} climbed {got:.2f} risers (first pass {want:.2f})", flush=True)
-            if (got >= args.retry_until) if args.retry_until is not None else (got >= 0.5 * want):
+            if args.pick_fail:
+                if got < 0.9:
+                    break
+            elif (got >= args.retry_until) if args.retry_until is not None else (got >= 0.5 * want):
                 break
         risers, follow, (climb, ups, end_step, reason, frames, trace) = best
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
