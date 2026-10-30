@@ -47,6 +47,12 @@ parser.add_argument("--riser_m", type=float, default=None,
 parser.add_argument("--spawn_x", type=float, default=None,
                     help="counterfactual: spawn this far along +x from the pit centre (the robot drives +x, so -0.08 "
                          "makes the run-up to the first riser 8 cm longer)")
+parser.add_argument("--spawn_yaw", type=float, default=None,
+                    help="counterfactual: spawn every robot with this heading [rad] instead of square to the risers "
+                         "(yaw > 0 puts the right wheel ahead)")
+parser.add_argument("--symmetrize", action="store_true",
+                    help="act with the mirror-symmetrised policy (pi(o) + M pi(M o)) / 2 (maps of symmetry.py): "
+                         "exactly left-right equivariant, so any remaining side preference is not the policy's")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -59,6 +65,9 @@ from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 
 import lab.flamingo.tasks  # noqa: E402, F401
+from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.rough_env.stair_step.symmetry import (  # noqa: E402
+    stair_step_policy_mirror,
+)
 from scripts.co_rl.core.runners import OnPolicyRunner  # noqa: E402
 from scripts.co_rl.core.wrapper import CoRlVecEnvWrapper  # noqa: E402
 
@@ -81,6 +90,8 @@ def main() -> dict:
             sub.step_height_range = (args.riser_m, args.riser_m)
     if args.spawn_x is not None:
         cfg.events.reset_base.params["pose_range"]["x"] = (args.spawn_x, args.spawn_x)
+    if args.spawn_yaw is not None:
+        cfg.events.reset_base.params["pose_range"]["yaw"] = (args.spawn_yaw, args.spawn_yaw)
     agent = load_cfg_from_registry(args.task, "co_rl_cfg_entry_point")
     agent.num_policy_stacks = args.num_policy_stacks
     agent.num_critic_stacks = 2
@@ -97,7 +108,8 @@ def main() -> dict:
     rows = terrain.cfg.terrain_generator.num_rows
     terms = base.termination_manager.active_terms
     report = {"checkpoint": args.checkpoint, "task": args.task, "scan_scale": args.scan_scale,
-              "scan_relative": args.scan_relative, "riser_m": args.riser_m, "spawn_x": args.spawn_x, "levels": {}}
+              "scan_relative": args.scan_relative, "riser_m": args.riser_m, "spawn_x": args.spawn_x,
+              "spawn_yaw": args.spawn_yaw, "symmetrize": args.symmetrize, "levels": {}}
     om = base.observation_manager
     scan_slice = None
     back = None
@@ -112,13 +124,19 @@ def main() -> dict:
         x = base.scene.sensors["feet_scanner"].ray_starts[0, :, 0]
         back = (x - x.min()).abs() < 1.0e-4
 
+    mirror = stair_step_policy_mirror(env) if args.symmetrize else None
+
     def act(o):
         if scan_slice is not None:
             o = o.clone()
             scan = o[:, scan_slice]
             ref = scan[:, back].mean(dim=1, keepdim=True) if args.scan_relative else 0.0
             o[:, scan_slice] = ref + args.scan_scale * (scan - ref)
-        return torch.clamp(policy(o), -1.0, 1.0)
+        a = policy(o)
+        if mirror is not None:
+            mirror_obs, mirror_act = mirror
+            a = 0.5 * (a + mirror_act(policy(mirror_obs(o))))
+        return torch.clamp(a, -1.0, 1.0)
 
     with torch.inference_mode():
         for level in args.levels:

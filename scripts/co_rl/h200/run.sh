@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
-BASE=/home/work/postech/flamingo_h200
+BASE=/home/work/postech/flamingo_light
 PY="$BASE/venv/bin/python"
 SITE=$("$PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
 SRC="$SITE/isaaclab/source"

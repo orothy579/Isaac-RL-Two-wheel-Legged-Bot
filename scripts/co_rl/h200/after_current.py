@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from dispatch import STUDENT_CHECKPOINT
 
 ROOT = Path(__file__).resolve().parents[3]
-REMOTE_BASE = "/home/work/postech/flamingo_h200"
+REMOTE_BASE = "/home/work/postech/flamingo_light"
 REMOTE_REPO = REMOTE_BASE + "/Isaac-RL-Two-wheel-Legged-Bot"
 FINAL_ROOT = ROOT / "logs/co_rl/Flamingo_Light_Rough_Stair_Step_Lift_Mirror_Gain/ppo"
 SSH = ["ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",

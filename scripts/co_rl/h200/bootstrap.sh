@@ -2,7 +2,7 @@
 # Called by after_current.py only after the complete local two-stage run.
 set -euo pipefail
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
-BASE=/home/work/postech/flamingo_h200
+BASE=/home/work/postech/flamingo_light
 CKPT=${1:?relative checkpoint path required}
 [[ "$REPO" == "$BASE/Isaac-RL-Two-wheel-Legged-Bot" ]]
 mkdir -p "$BASE/cache" "$BASE/python" "$BASE/tmp"
