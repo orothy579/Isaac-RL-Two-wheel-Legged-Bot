@@ -46,6 +46,7 @@ from lab.flamingo.tasks.manager_based.locomotion.velocity.flamingo_light_env.vel
 )
 
 from ...default_height_map import use_default_height_map
+from . import reset_bank
 from . import zmp_rewards as zmp
 from .stair_step_terrain_cfg import STAIR_STEP_LIFT_TERRAINS_CFG, STAIR_STEP_TERRAINS_CFG
 
@@ -437,3 +438,40 @@ class FlamingoStairStepLiftGainRobustEnvCfg_PLAY(FlamingoStairStepLiftGainEnvCfg
     def __post_init__(self):
         super().__post_init__()
         _setup_robust(self)
+
+
+# ============== robust + diverse resets: arm A of the H200 queue's S4 / S5 A/B (2026-10-31) ==============
+# The robust task plus (1) 70 % of the episodes start from a recorded state of the same tile (reset_bank.py:
+# approaching a riser, a wheel on its face, one wheel up, on the stairs, the second before a failure), (2) the
+# leg lift is paid after the riser contact a blind policy can feel, not when the privileged scan sees the
+# riser, and pushing a wheel into the face costs, (3) jumping is allowed (user, 2026-10-31): no flight
+# penalty, hopping up pays riser progress, and the curriculum promotes on risers climbed alone.
+RESET_BANK_PATH = "logs/co_rl/_reset_bank/stair_bank_v1.npz"  # relative to the repository root
+
+
+@configclass
+class StairStepResetRewardsCfg(StairStepLiftGainRewardsCfg):
+    swing_retraction = RewTerm(
+        func=zmp.riser_contact_retraction_gain, weight=2.0, params={"extra": 0.02, "window": 0.5}
+    )
+    face_push = RewTerm(func=zmp.riser_face_push, weight=-2.0, params={"force_scale": 50.0})
+    riser_progress = RewTerm(func=zmp.riser_progress, weight=1.0, params={"unit": 0.05, "flight_cooldown": 0.0})
+
+
+def _setup_reset_bank(cfg) -> None:
+    cfg.rewards.flight = None
+    cfg.events.reset_from_bank = EventTerm(
+        func=reset_bank.reset_from_state_bank,
+        mode="reset",
+        params={"bank_path": RESET_BANK_PATH, "probability": 0.7, "mirror": True},
+    )
+    cfg.curriculum.terrain_levels.params["min_step_ups"] = 0.0
+
+
+@configclass
+class FlamingoStairStepLiftGainRobustResetEnvCfg(FlamingoStairStepLiftGainRobustEnvCfg):
+    rewards: StairStepResetRewardsCfg = StairStepResetRewardsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        _setup_reset_bank(self)

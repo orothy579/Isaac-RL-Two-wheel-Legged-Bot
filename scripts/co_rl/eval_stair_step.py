@@ -32,6 +32,12 @@ parser.add_argument("--num_policy_stacks", type=int, default=2)
 parser.add_argument("--num_critic_stacks", type=int, default=2)
 parser.add_argument("--out", default=None, help="write the JSON summary here")
 parser.add_argument("--stochastic", action="store_true", help="sample actions with the learned std (as in training)")
+parser.add_argument("--max_speed", type=float, default=None,
+                    help="cap the wheel speed targets at this rim speed [m/s] (a motor-driver limit: the policy's own "
+                         "action, which it observes, is not changed)")
+parser.add_argument("--yaw_spread", type=float, default=None,
+                    help="spawn headings linspace(-s, s, num_envs) [rad] instead of square to the risers (training: "
+                         "uniform in +-0.6)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.headless = True
@@ -40,6 +46,7 @@ simulation_app = AppLauncher(args_cli).app
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
 
+import isaaclab.utils.math as math_utils  # noqa: E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 
@@ -59,6 +66,9 @@ def main() -> dict:
     # evaluated level of a process ran with a 0 command (and stood in front of the riser)
     env_cfg.commands.base_velocity.initial_phase_time = 0.0
     env_cfg.episode_length_s = args_cli.seconds + 1.0
+    if args_cli.max_speed is not None:
+        w = args_cli.max_speed / env_cfg.zmp_gait.wheel_radius
+        env_cfg.actions.wheel_vel.clip = {".*_wheel_joint": (-w, w)}
     agent_cfg = load_cfg_from_registry(args_cli.task, "co_rl_cfg_entry_point")
     agent_cfg.num_policy_stacks = args_cli.num_policy_stacks
     agent_cfg.num_critic_stacks = args_cli.num_critic_stacks
@@ -75,12 +85,21 @@ def main() -> dict:
     all_ids = torch.arange(base.num_envs, device=base.device)
 
     report = {"checkpoint": args_cli.checkpoint, "seconds": args_cli.seconds, "command": args_cli.command,
-              "stochastic": args_cli.stochastic, "levels": {}}
+              "stochastic": args_cli.stochastic, "yaw_spread": args_cli.yaw_spread,
+              "max_speed": args_cli.max_speed, "levels": {}}
     for level in args_cli.levels:
         terrain.terrain_levels[:] = level
         terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
         base.episode_length_buf[:] = 0
         base._reset_idx(all_ids)
+        if args_cli.yaw_spread is not None:
+            robot = base.scene["robot"]
+            yaws = torch.linspace(-args_cli.yaw_spread, args_cli.yaw_spread, base.num_envs, device=base.device)
+            root = robot.data.default_root_state.clone()
+            root[:, :3] += terrain.env_origins
+            root[:, 3:7] = math_utils.quat_from_euler_xyz(torch.zeros_like(yaws), torch.zeros_like(yaws), yaws)
+            robot.write_root_pose_to_sim(root[:, :7])
+            robot.write_root_velocity_to_sim(torch.zeros_like(root[:, 7:]))
         base.scene.write_data_to_sim()
         base.sim.forward()
         obs, _ = env.get_observations()
@@ -92,6 +111,7 @@ def main() -> dict:
         alive = torch.ones(base.num_envs, dtype=torch.bool, device=base.device)
         stats = {k: torch.zeros(base.num_envs, device=base.device) for k in (
             "step_ups", "alt_step_ups", "flight_time", "single_time", "time", "lifted", "lifted_alt", "dist")}
+        vmax = torch.zeros(base.num_envs, device=base.device)  # each env's top forward speed (base frame)
         ups_lr = torch.zeros(base.num_envs, 2, device=base.device)
         lifted_lr = torch.zeros(base.num_envs, 2, device=base.device)
         wheel_best = torch.zeros(base.num_envs, 2, device=base.device)
@@ -114,6 +134,7 @@ def main() -> dict:
             stats["lifted"] += s.lifted_step_up.float().sum(dim=1) * live
             stats["lifted_alt"] += s.lifted_step_up_alternating.float().sum(dim=1) * live
             stats["dist"] += base.scene["robot"].data.root_link_lin_vel_b[:, 0].clamp(min=0.0) * base.step_dt * live
+            vmax = torch.maximum(vmax, base.scene["robot"].data.root_link_lin_vel_b[:, 0] * live)
             ups_lr += s.step_up.float() * live.unsqueeze(1)
             lifted_lr += s.lifted_step_up.float() * live.unsqueeze(1)
             gain = (s.foot_max_z - s.floor_z.unsqueeze(1)).clamp(min=0.0, max=10.0)
@@ -138,6 +159,13 @@ def main() -> dict:
             "risers_climbed_mean": round((best_climb / riser).mean().item(), 3),
             "risers_climbed_max": round((best_climb / riser).max().item(), 3),
             "envs_climbed_1plus": round(((best_climb / riser) >= 0.9).float().mean().item(), 3),
+            # k consecutive risers: the trailing wheel stood on the k-th tread (k - 0.1 risers up, as 0.9 for one);
+            # the goal is 3 consecutive 15 cm risers in >= 50 % of the episodes
+            "envs_climbed_3plus": round(((best_climb / riser) >= 2.9).float().mean().item(), 3),
+            "envs_climbed_nplus": {str(k): round(((best_climb / riser) >= k - 0.1).float().mean().item(), 3)
+                                   for k in (1, 2, 3, 4, 5)},
+            "risers_climbed_hist": torch.bincount(torch.floor(best_climb / riser + 0.1).clamp(0, 10).long(),
+                                                  minlength=11).tolist(),
             "step_ups_per_env": round(stats["step_ups"].mean().item(), 3),
             "alternating_ratio": round(stats["alt_step_ups"].sum().item() / max(ups, 1.0), 3),
             "step_ups_left_right": [round(v, 3) for v in ups_lr.mean(dim=0).tolist()],
@@ -148,6 +176,8 @@ def main() -> dict:
             "lifted_share": round(stats["lifted"].sum().item()
                                   / max(torch.floor(wheel_best / riser + 0.3).sum().item(), 1.0), 3),
             "mean_forward_speed": round((stats["dist"].sum() / stats["time"].sum().clamp(min=1e-6)).item(), 3),
+            "top_forward_speed_median": round(vmax.median().item(), 3),
+            "top_forward_speed_max": round(vmax.max().item(), 3),
             "flight_frac": round((stats["flight_time"].sum() / stats["time"].sum().clamp(min=1e-6)).item(), 4),
             "single_support_frac": round((stats["single_time"].sum() / stats["time"].sum().clamp(min=1e-6)).item(), 4),
             "terminated_frac": round(terminated.float().mean().item(), 3),

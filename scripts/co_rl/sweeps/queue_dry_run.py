@@ -24,8 +24,16 @@ if script.endswith("train.py"):
 elif script.endswith("distill_stair_step.py"):
     os.makedirs(opt["--out_dir"], exist_ok=True)
     open(os.path.join(opt["--out_dir"], "student_1499.pt"), "w").close()
+elif script.endswith("cosim_eval_policy.py"):
+    levels = {k: {"riser_height_m": h, "envs_climbed_1plus": 0.1 * random.random(), "envs_climbed_3plus": 0.02 * random.random(),
+                  "risers_climbed_mean": random.random()} for k, h in (("0", 0.0933), ("3", 0.1133), ("6", 0.1333), ("9", 0.15))}
+    with open(opt["--out"], "w") as f:
+        json.dump({"sim": "mujoco", "checkpoint": opt["--checkpoint"], "levels": levels}, f)
 elif script.endswith("eval_stair_step.py"):
-    levels = {k: {"riser_height_m": h, "envs_climbed_1plus": random.random(), "risers_climbed_mean": 5 * random.random()}
-              for k, h in (("0", 0.0933), ("3", 0.1133), ("6", 0.1333), ("9", 0.15))}
+    levels = {}
+    for k, h in (("0", 0.0933), ("3", 0.1133), ("6", 0.1333), ("9", 0.15)):
+        one = random.random()
+        levels[k] = {"riser_height_m": h, "envs_climbed_1plus": one, "envs_climbed_3plus": one * random.random(),
+                     "risers_climbed_mean": 5 * random.random()}
     with open(opt["--out"], "w") as f:
         json.dump({"checkpoint": opt["--checkpoint"], "levels": levels}, f)

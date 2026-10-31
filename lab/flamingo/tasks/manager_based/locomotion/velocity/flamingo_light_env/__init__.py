@@ -344,6 +344,17 @@ gym.register(
     },
 )
 
+# the robust task + diverse resets from a recorded state bank, contact-gated leg lift, jumping allowed
+gym.register(
+    id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-Robust-Reset-v1-ppo",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": rough_env.rough_env_stair_step_cfg.FlamingoStairStepLiftGainRobustResetEnvCfg,
+        "co_rl_cfg_entry_point": agents.co_rl_cfg.FlamingoLightRoughPPORunnerCfg_StairStepLiftMirrorGain,
+    },
+)
+
 # fresh symmetric start from the flat stand-drive: Lift-Mirror-Gain on risers 5 -> 15 cm
 gym.register(
     id="Isaac-Velocity-Rough-Flamingo-Light-Stair-Step-Lift-Mirror-Gain-LowStart-v1-ppo",

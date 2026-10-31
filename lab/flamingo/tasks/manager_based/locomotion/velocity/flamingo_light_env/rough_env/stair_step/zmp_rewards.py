@@ -732,6 +732,61 @@ def base_roll_pitch_l2(env: ManagerBasedRLEnv, roll_weight: float = 0.25, pitch_
     return roll_weight * torch.square(g[:, 1]) + pitch_weight * torch.square(g[:, 0])
 
 
+# ========================== blind climbing: react to the riser contact (Robust-Reset) ==========================
+# A blind policy cannot see the riser coming; what it can sense is the impact of a wheel on the riser face.
+# The scan-gated retraction term pays lifting the pending swing leg as soon as a riser is 6-21 cm ahead; these
+# terms key on the contact instead. Separate from ZmpGaitState.update so the other tasks are unchanged.
+def riser_face_contacts(env: ManagerBasedRLEnv, face_force_threshold: float = 5.0) -> ZmpGaitState:
+    """Face-contact bookkeeping on the shared state, once per step: ``face_force`` (N, 2) - the backward
+    horizontal normal force [N] on each wheel (heading frame) where the terrain ahead of it rises (``blocked``),
+    i.e. a riser face pushing the tire back; ``time_since_face`` (N, 2) - seconds since it last exceeded
+    ``face_force_threshold``."""
+    s = get_gait_state(env)
+    if getattr(s, "_face_step", None) == env.common_step_counter:
+        return s
+    s._face_step = env.common_step_counter
+    if not hasattr(s, "face_force"):
+        s.face_force = torch.zeros(s.num_envs, 2, device=s.device)
+        s.time_since_face = torch.full((s.num_envs, 2), 1.0e3, device=s.device)
+        s._unit_x = torch.tensor([1.0, 0.0, 0.0], device=s.device).expand(s.num_envs, 3)
+    s.time_since_face[env.episode_length_buf <= 1] = 1.0e3
+    f_xy = s.contact_sensor.data.net_forces_w[:, s.sensor_wheel_ids, :2]  # (N, 2, 2) normal force: no friction
+    fwd = math_utils.quat_apply(math_utils.yaw_quat(s.robot.data.root_link_quat_w), s._unit_x)[:, :2]
+    back = -(f_xy * fwd.unsqueeze(1)).sum(dim=-1)
+    s.face_force = back.clamp(min=0.0) * s.blocked.float()
+    hit = s.face_force > face_force_threshold
+    s.time_since_face = torch.where(hit, torch.zeros_like(s.time_since_face), s.time_since_face + env.step_dt)
+    return s
+
+
+def riser_contact_retraction_gain(
+    env: ManagerBasedRLEnv, extra: float = 0.02, window: float = 0.5, face_force_threshold: float = 5.0
+) -> torch.Tensor:
+    """Potential-based retraction like :func:`swing_leg_retraction_gain`, gated by the contact a blind policy
+    feels: each wheel's lift fraction (its leg retracted relative to the other leg, over the riser height +
+    ``extra``, clipped to [0, 1]) counts while a riser is ahead of it and it touched the riser face within
+    ``window`` s. Pays the increase of the summed fraction per second (episode sum Phi(end) - Phi(start))."""
+    s = riser_face_contacts(env, face_force_threshold)
+    frac = (s.rel_lift / (s.riser_height + extra).clamp(min=extra)).clamp(0.0, 1.0)
+    active = s.blocked & (s.time_since_face < window) & s.contact.any(dim=1, keepdim=True)
+    value = (frac * active.float()).sum(dim=1)
+    prev = getattr(env, "_contact_retraction_prev", None)
+    if prev is None:
+        prev = value.clone()
+    prev = torch.where(env.episode_length_buf <= 1, value, prev)
+    env._contact_retraction_prev = value.clone()
+    return (value - prev) / env.step_dt
+
+
+def riser_face_push(
+    env: ManagerBasedRLEnv, force_scale: float = 50.0, face_force_threshold: float = 5.0
+) -> torch.Tensor:
+    """Pushing a wheel into a riser face instead of lifting it: each wheel's face force / ``force_scale``,
+    clipped to [0, 1], summed over the wheels. Negative weight."""
+    s = riser_face_contacts(env, face_force_threshold)
+    return (s.face_force / force_scale).clamp(max=1.0).sum(dim=1)
+
+
 # ========================================= terminations =========================================
 def no_progress_termination(
     env: ManagerBasedRLEnv,
@@ -814,8 +869,9 @@ def stair_step_terrain_levels(
 ) -> torch.Tensor:
     """Riser-height curriculum: promote after ``promote_risers`` risers climbed (trailing wheel)
     *with* at least ``min_step_ups`` clean single-support step-ups in the episode (rolling both
-    wheels over a low riser does not promote); demote below ``demote_risers``. Returns the mean
-    terrain level."""
+    wheels over a low riser does not promote); demote below ``demote_risers``. Episodes started
+    from the reset bank (``reset_bank.py``: mid-climb, the second before a failure) move no env.
+    Returns the mean terrain level."""
     terrain = env.scene.terrain
     if getattr(env, "_zmp_gait_state", None) is None:
         return torch.mean(terrain.terrain_levels.float())
@@ -824,6 +880,9 @@ def stair_step_terrain_levels(
     stepped = env._zmp_gait_state.ep_step_ups[ids]
     move_up = (climbed >= promote_risers) & (stepped >= min_step_ups)
     move_down = (climbed < demote_risers) & ~move_up
+    bank = getattr(env, "_bank_episode", None)
+    if bank is not None:
+        move_up, move_down = move_up & ~bank[ids], move_down & ~bank[ids]
     terrain.update_env_origins(ids, move_up, move_down)
     return torch.mean(terrain.terrain_levels.float())
 

@@ -165,7 +165,8 @@ class CoRlVecEnvWrapper(VecEnv):
                 policy_obs = self.policy_state_handler.reset(obs_dict["stack_policy"], obs_dict["none_stack_policy"])
             else:
                 policy_obs = self.policy_state_handler.update(obs_dict["stack_policy"], obs_dict["none_stack_policy"])
-        
+            policy_obs = self._restore_bank_history(policy_obs, obs_dict)
+
         #!Todo - should consider DirectEnv case
         else:
             policy_obs = obs_dict["policy"]
@@ -209,7 +210,8 @@ class CoRlVecEnvWrapper(VecEnv):
         # Policy observations reset: state handler가 존재하면 reset() 호출, 없으면 단순 concat
         if hasattr(self, "policy_state_handler") and self.policy_state_handler is not None:
             policy_obs = self.policy_state_handler.reset(obs_dict["stack_policy"], obs_dict["none_stack_policy"])
-        
+            policy_obs = self._restore_bank_history(policy_obs, obs_dict)
+
         #!Todo - should consider DirectEnv case
         else: 
             policy_obs = obs_dict["policy"]
@@ -236,7 +238,8 @@ class CoRlVecEnvWrapper(VecEnv):
             policy_obs = self.policy_state_handler.update(
                 obs_dict["stack_policy"], obs_dict["none_stack_policy"]
             )
-            obs_dict["policy"] = policy_obs        
+            policy_obs = self._restore_bank_history(policy_obs, obs_dict)
+            obs_dict["policy"] = policy_obs
 
         if hasattr(self, "critic_state_handler"):
             critic_obs = self.critic_state_handler.update(
@@ -252,6 +255,24 @@ class CoRlVecEnvWrapper(VecEnv):
 
         return policy_obs, rew, dones, extras
 
+
+    def _restore_bank_history(self, policy_obs: torch.Tensor, obs_dict: dict) -> torch.Tensor:
+        """Envs just reset to a recorded state (stair_step/reset_bank.py) get the policy frames recorded up to it
+        instead of the previous episode's: ``env._bank_history = (env ids, frames newest first)``. Frame 0 too:
+        right after a reset the env's own frame shows the last action as 0 and one-step-old base velocities.
+        Only that task sets the attribute; every other env passes through."""
+        pending = getattr(self.unwrapped, "_bank_history", None)
+        if pending is None or self.policy_state_handler.stack_buffer is None:
+            return policy_obs
+        self.unwrapped._bank_history = None
+        ids, frames = pending
+        buf = self.policy_state_handler.stack_buffer
+        for i in range(min(len(buf), frames.shape[1])):
+            buf[i][ids] = frames[:, i]
+        stacked = self.policy_state_handler.get_stacked()
+        if self.policy_state_handler.nonstack_dim == 0:
+            return stacked
+        return torch.cat([stacked, obs_dict["none_stack_policy"]], dim=-1)
 
     def close(self):  # noqa: D102
         return self.env.close()
