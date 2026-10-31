@@ -5,6 +5,8 @@ from .rough_env_stair_step_cfg import (  # noqa: F401
     FlamingoStairStepLiftGainEnvCfg_PLAY,
     FlamingoStairStepLiftGainPerceptiveEnvCfg,
     FlamingoStairStepLiftGainPerceptiveEnvCfg_PLAY,
+    FlamingoStairStepLiftGainRobustEnvCfg,
+    FlamingoStairStepLiftGainRobustEnvCfg_PLAY,
     FlamingoStairStepLiftGainLowStartEnvCfg,
     FlamingoStairStepLiftGainLowStartEnvCfg_PLAY,
     FlamingoStairStepLiftGainLowStartPerceptiveEnvCfg,

@@ -28,6 +28,7 @@ Warm start from the v01_2_2 flat stand-drive policy::
 import math
 
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
@@ -394,3 +395,45 @@ class FlamingoStairStepLiftGainLowStartPerceptiveEnvCfg_PLAY(FlamingoStairStepLi
     def __post_init__(self):
         super().__post_init__()
         _setup_low_start(self)
+
+
+# ===================== robust: wider domain randomisation for the deployable blind policy =====================
+# The blind student is what runs on the robot and in the MuJoCo cosim, which differ from PhysX in contact,
+# actuator and mass details. Wider than the training ranges: friction (0.6-1.0 / 0.5-0.8 before), base mass
+# -1..+2 kg (+-1), pushes every 6-10 s at up to 0.4 m/s (10-15 s, 0.3), PD gains x0.8-1.2 per episode (none)
+# and up to 6 physics steps (30 ms) of actuator lag (20 ms). The CoM spread stays +-5 cm.
+def _setup_robust(cfg) -> None:
+    ev = cfg.events
+    ev.physics_material.params["static_friction_range"] = (0.4, 1.2)
+    ev.physics_material.params["dynamic_friction_range"] = (0.3, 1.0)
+    ev.add_base_mass.params["mass_distribution_params"] = (-1.0, 2.0)
+    if ev.push_robot is not None:  # the play variants have no pushes
+        ev.push_robot.interval_range_s = (6.0, 10.0)
+        ev.push_robot.params = {"velocity_range": {"x": (-0.4, 0.4), "y": (-0.4, 0.4), "z": (-0.3, 0.3)}}
+    ev.actuator_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_shoulder_joint", ".*_wheel_joint"]),
+            "stiffness_distribution_params": (0.8, 1.2),
+            "damping_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    # copies: the actuator cfgs are shared with the module-level robot cfg
+    cfg.scene.robot.actuators = {k: v.replace(max_delay=6) for k, v in cfg.scene.robot.actuators.items()}
+
+
+@configclass
+class FlamingoStairStepLiftGainRobustEnvCfg(FlamingoStairStepLiftGainEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _setup_robust(self)
+
+
+@configclass
+class FlamingoStairStepLiftGainRobustEnvCfg_PLAY(FlamingoStairStepLiftGainEnvCfg_PLAY):
+    def __post_init__(self):
+        super().__post_init__()
+        _setup_robust(self)

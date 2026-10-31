@@ -547,3 +547,39 @@ critic은 teacher 것을 복사했다. 4096 env, 1500 it, teacher 개입 비율 
 - 대칭화 정책 `(pi(o) + M pi(M o)) / 2`(`--symmetrize`)는 앞선 바퀴부터 오르지만 성공률이 절반 가까이로 떨어진다.
   정책이 익힌 "오른쪽부터" 동작과 그 거울상의 평균은 어느 쪽 동작도 아니다. 편향은 학습에서 다뤄야 한다
   (후보: 거울상 샘플을 PPO 배치에 넣는 symmetric data augmentation. mirror loss만으로는 비대칭 MSE 0.003이 남는다).
+
+### 8.5 H200 결과와 blind 15 cm 큐 (2026-10-31)
+
+**perceptive teacher**: 131072 env 이어 학습 (model_500 → model_2749, 10-30 13:12 – 10-31 05:04,
+`..._h200_scaled_resume500_n131072`). 256 env, 첫 단 성공률 / 오른 단 평균:
+
+| checkpoint | 9.3 cm | 11.3 cm | 13.3 cm | 15 cm |
+|---|---|---|---|---|
+| two-stage stage 2 model_4999 (시작점) | 90.2 % / 5.93 | 90.2 % / 6.55 | 89.1 % / 6.42 | 76.6 % / 5.03 |
+| H200 model_400 | 92.2 % / 6.67 | 93.8 % / 6.96 | 90.6 % / 6.84 | 85.5 % / 6.06 |
+| **H200 model_2749** | **96.1 % / 7.21** | **98.4 % / 7.92** | **94.1 % / 8.04** | **90.2 % / 7.28** |
+| model_2749, yaw −0.3 (왼 바퀴 앞섬) | 94.5 % | 97.3 % | 93.0 % | 86.7 % |
+| model_2749, yaw +0.3 (오른 바퀴 앞섬) | 98.4 % | 94.5 % | 95.7 % | 88.3 % |
+
+- 왼 바퀴가 앞선 출발의 손해(model_4999: 6–17 %p)가 거의 사라졌다. 첫 단은 여전히 오른 바퀴다 (L 0–1 / 256).
+
+**blind student**: Codex 큐의 PPO 이어 학습 (`..._student_ft_1793390685`, student_1499에서, 65536 env, 3000 it, 10-31 05:27 시작).
+
+| checkpoint | 9.3 cm | 11.3 cm | 13.3 cm | 15 cm |
+|---|---|---|---|---|
+| student_1499 (DAgger만, 64 env) | 17.2 % / 0.91 | 1.6 % / 0.02 | 0 % | 0 % |
+| **student_ft model_1400** | **75.8 % / 5.87** | **63.3 % / 5.41** | **55.5 % / 5.13** | **53.1 % / 4.92** |
+
+- blind로 15 cm 첫 단 50 %를 학습 중간(1400 it)에 넘었다 (256 env, 표준오차 약 3 %p).
+- MuJoCo(cosim `envs/flamingo_light_v01_2_2`)에서는 model_4999와 model_2749 모두 0 %다. 관측·행동은 Isaac과 일치하는 것을
+  확인했지만, 사용자 판단으로 cosim 쪽 버그 가능성이 커서 Codex가 디버깅한다.
+
+**큐** (`scripts/co_rl/sweeps/h200_blind15_queue.sh`, 진행: `/home/work/postech/flamingo_light/claude_queue/`):
+S1 student_ft 평가 → S2 새 teacher(model_2749)로 DAgger 재증류 → S3 그 student PPO 2000 it → S4/S5 두 계보의 최고
+checkpoint에서 robust 학습(`...-Lift-Mirror-Gain-Robust-v1-ppo`: 마찰 0.4–1.2 / 0.3–1.0, base 질량 −1~+2 kg,
+6–10 s마다 0.4 m/s 밀기, PD gain ×0.8–1.2, actuator 지연 최대 30 ms) 2500 it씩 → S6/S7 나은 robust 학습을 3000 / 4000 it 이어 학습.
+모든 checkpoint는 15 cm 성공률(robust는 nominal과 robust play 평균)로 고른다 (`pick_best_blind.py`).
+- **반복 횟수 상한 15,000**: 어떤 가중치도 그 계보 전체(DAgger + warm start·resume으로 이어진 모든 PPO update)에서 15,000
+  iteration을 넘게 학습하지 않는다. 큐가 단계마다 남은 횟수를 계산해 줄이거나 건너뛴다. 계획대로면 가장 긴 계보가
+  14,000에서 끝난다 (DAgger 1500 + student_ft 3000 + robust 2500 + 3000 + 4000). teacher model_2749의 계보는 약 12,250이다
+  (stand-drive 1500 + stage 1 3000 + stage 2 5000 + H200 2751).
