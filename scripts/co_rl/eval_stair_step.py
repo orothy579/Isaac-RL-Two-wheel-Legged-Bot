@@ -35,6 +35,8 @@ parser.add_argument("--stochastic", action="store_true", help="sample actions wi
 parser.add_argument("--max_speed", type=float, default=None,
                     help="cap the wheel speed targets at this rim speed [m/s] (a motor-driver limit: the policy's own "
                          "action, which it observes, is not changed)")
+parser.add_argument("--obs_noise", action="store_true",
+                    help="keep the training observation noise on (the play task switches it off)")
 parser.add_argument("--yaw_spread", type=float, default=None,
                     help="spawn headings linspace(-s, s, num_envs) [rad] instead of square to the risers (training: "
                          "uniform in +-0.6)")
@@ -66,6 +68,8 @@ def main() -> dict:
     # evaluated level of a process ran with a 0 command (and stood in front of the riser)
     env_cfg.commands.base_velocity.initial_phase_time = 0.0
     env_cfg.episode_length_s = args_cli.seconds + 1.0
+    if args_cli.obs_noise:
+        env_cfg.observations.stack_policy.enable_corruption = True
     if args_cli.max_speed is not None:
         w = args_cli.max_speed / env_cfg.zmp_gait.wheel_radius
         env_cfg.actions.wheel_vel.clip = {".*_wheel_joint": (-w, w)}

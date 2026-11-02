@@ -31,9 +31,18 @@ FRAMES = int(os.environ.get("COSIM_EVAL_FRAMES", "3"))
 SCAN = os.environ.get("COSIM_EVAL_SCAN", "1") == "1"
 
 
+# COSIM_EVAL_OBS_NOISE=1: Isaac's training noise on each new frame (uniform, added before the obs scale there):
+# shoulder pos +-0.05, joint vel +-1.5 rad/s x 0.15, base ang vel +-0.15 rad/s x 0.25, gravity +-0.05, action +-0.01
+OBS_NOISE = os.environ.get("COSIM_EVAL_OBS_NOISE", "0") == "1"
+NOISE_HALF = np.array([0.05] * 2 + [1.5 * 0.15] * 4 + [0.15 * 0.25] * 3 + [0.05] * 3 + [0.01] * 4)
+_noise_rng = np.random.default_rng(os.getpid())
+
+
 def _observe(self, command: float) -> np.ndarray:
     """``stack_policy`` frames (newest first), the scaled command, then the feet scan if the policy sees it."""
     f = self.frame()
+    if OBS_NOISE:
+        f = f + _noise_rng.uniform(-NOISE_HALF, NOISE_HALF)
     self.frames = [f] * FRAMES if not self.frames else [f] + self.frames[: FRAMES - 1]
     parts = self.frames + [np.array([2.0 * command, 0.0, 0.0, 0.0])]
     if SCAN:
@@ -166,10 +175,12 @@ def main() -> None:
     ap.add_argument("--max_speed", type=float, default=None,
                     help="also clip the wheel speed targets at this rim speed [m/s] (this cuts the drive torque too)")
     ap.add_argument("--no_speed_limits", action="store_true", help="without Isaac's joint / link speed limits")
+    ap.add_argument("--obs_noise", action="store_true", help="add Isaac's training observation noise")
     a = ap.parse_args()
     if a.max_speed is not None:
         os.environ["COSIM_EVAL_MAX_WHEEL"] = str(a.max_speed / ev.WHEEL_RADIUS)
     os.environ["COSIM_EVAL_SPEED_LIMITS"] = "0" if a.no_speed_limits else "1"
+    os.environ["COSIM_EVAL_OBS_NOISE"] = "1" if a.obs_noise else "0"
     os.environ["COSIM_EVAL_FRAMES"] = str(a.frames)
     os.environ["COSIM_EVAL_SCAN"] = "0" if a.no_scan else "1"
     n_in = ev.Actor(a.actor).layers[0][0].shape[1]
@@ -182,7 +193,7 @@ def main() -> None:
     with mp.get_context("spawn").Pool(a.workers) as pool:
         res = pool.map(trial, jobs, chunksize=4)
     report = {"sim": "mujoco", "checkpoint": a.checkpoint, "actor": a.actor, "frames": a.frames, "scan": not a.no_scan,
-              "max_speed": a.max_speed, "isaac_speed_limits": not a.no_speed_limits,
+              "max_speed": a.max_speed, "isaac_speed_limits": not a.no_speed_limits, "obs_noise": a.obs_noise,
               "trials": a.trials, "seconds": a.seconds, "command": a.command, "yaw": a.yaw, "seed": a.seed,
               "mujoco_version": ev.mujoco.__version__,
               "actor_sha256": hashlib.sha256(open(a.actor, "rb").read()).hexdigest(),

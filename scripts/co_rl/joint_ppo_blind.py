@@ -67,6 +67,13 @@ def main():
     ap.add_argument("--promote", type=float, default=0.5)
     ap.add_argument("--save_every", type=int, default=50)
     ap.add_argument("--seed", type=int, default=777)
+    ap.add_argument("--isaac_like_eval", action="store_true",
+                    help="Isaac as it is evaluated (and as MuJoCo always is): clean observations and the history of a "
+                         "reset env refilled with its first frame. Without it the policy told the simulators apart by "
+                         "the stale co_rl history and the noise: 4.9 risers per episode in training, 0.8 in evaluation")
+    ap.add_argument("--mujoco_obs_noise", action="store_true",
+                    help="Isaac's training observation noise on the MuJoCo frames too: with clean MuJoCo and noisy "
+                         "Isaac frames the policy can tell the simulators apart by the noise alone")
     from isaaclab.app import AppLauncher
 
     AppLauncher.add_app_launcher_args(ap)
@@ -114,6 +121,8 @@ def main():
     warmup = max(warm_mj, warm_is)
 
     # ---------------- MuJoCo workers (before Isaac Sim starts) ----------------
+    if a.mujoco_obs_noise:  # read by cosim_eval_policy when the spawned workers import it
+        os.environ["COSIM_EVAL_OBS_NOISE"] = "1"
     params_w = [("actor." + k, p) for k, p in actor.named_parameters()] + \
                [("critic." + k, p) for k, p in critic_mj.named_parameters()] + [("log_std", log_std)]
     layout = [(k, tuple(p.shape)) for k, p in params_w]
@@ -150,6 +159,8 @@ def main():
     env_cfg.sim.physx.gpu_found_lost_pairs_capacity = max(2 ** 21, n_is * 64)
     env_cfg.sim.physx.gpu_heap_capacity = 2 ** 26 * min(factor, 8)
     env_cfg.sim.physx.gpu_collision_stack_size = 2 ** 26 * min(factor, 4)
+    if a.isaac_like_eval:
+        env_cfg.observations.stack_policy.enable_corruption = False
     agent_cfg = load_cfg_from_registry(a.isaac_task, "co_rl_cfg_entry_point")
     agent_cfg.num_policy_stacks = 49
     agent_cfg.num_critic_stacks = 2
@@ -234,6 +245,14 @@ def main():
                 if "time_outs" in extras:  # co_rl: bootstrap a time-out with the value of the state it left
                     rew = rew + a.gamma * v * extras["time_outs"].to(dev).float()
                 bi["rew"][t], bi["done"][t] = rew, dones.to(dev).float()
+                if a.isaac_like_eval and dones.any():  # a new episode starts with its first frame repeated
+                    ids = dones.bool().nonzero().squeeze(-1)
+                    for handler in (env.policy_state_handler, env.critic_state_handler):
+                        for i in range(1, len(handler.stack_buffer)):
+                            handler.stack_buffer[i][ids] = handler.stack_buffer[0][ids]
+                    ob_d = extras["observations"]
+                    obs_i = torch.cat([env.policy_state_handler.get_stacked(), ob_d["none_stack_policy"]], -1)
+                    ob_d["critic"] = torch.cat([env.critic_state_handler.get_stacked(), ob_d["none_stack_critic"]], -1)
                 crit_i = extras["observations"]["critic"]
                 log = extras.get("log", {})
                 if "Curriculum/terrain_levels" in log:
